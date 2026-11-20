@@ -142,8 +142,15 @@ void buildMap(std::vector<SourcePoint>& out, int width, int height, const MapPar
 // `decay` multiplies the bilinear sample. `src` and `dst` must not overlap.
 // `shiftX` and `shiftY` move every source point by that many pixels, as the original's
 // slide shift (slider1) offset the source pointer.
+// Each result rounds up or down at random, in proportion to its fraction, so a frame's
+// small darkening is kept on average instead of rounding away. Pass a different
+// `ditherSeed` each frame so the pattern changes.
 void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
-                 const SourcePoint* map, float step, float decay, float shiftX = 0, float shiftY = 0);
+                 const SourcePoint* map, float step, float decay, float shiftX = 0, float shiftY = 0,
+                 std::uint32_t ditherSeed = 0);
+
+// The rounding threshold, 0...1, that `warpIndices` uses for one pixel and seed.
+float ditherThreshold(int x, int y, std::uint32_t seed);
 
 // Original weightsum numerator for this area. The per-frame multiplier at 30 fps is numerator/256.
 int weightNumerator(int width, int height);

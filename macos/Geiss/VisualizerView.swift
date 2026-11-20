@@ -44,8 +44,10 @@ struct VisualizerView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .bottom) {
-                MetalScreen(presenter: model.presenter)
-                    .ignoresSafeArea()
+                MetalScreen(presenter: model.presenter) { date in
+                    model.tick(to: date, viewSize: geo.size)
+                }
+                .ignoresSafeArea()
                 if let info = model.info {
                     infoOverlay(info)
                         .padding(.top, 16)
@@ -80,14 +82,6 @@ struct VisualizerView: View {
             }
             .onChange(of: geo.size) { _, _ in
                 model.tick(to: .now, viewSize: geo.size)
-            }
-            .background {
-                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
-                    Color.clear
-                        .onChange(of: timeline.date) { _, date in
-                            model.tick(to: date, viewSize: geo.size)
-                        }
-                }
             }
         }
         .focusable()

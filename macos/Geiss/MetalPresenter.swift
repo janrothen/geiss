@@ -175,14 +175,55 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     """
 }
 
+/// An MTKView that calls `onFrame` once per refresh of the screen it is on, up to that
+/// screen's highest rate (120 Hz on a ProMotion display).
+final class DisplayLinkedView: MTKView {
+    var onFrame: ((Date) -> Void)?
+    private var link: CADisplayLink?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        link?.invalidate()
+        link = nil
+        guard window != nil else { return }
+        // The link follows the view to whichever screen shows it.
+        let link = displayLink(target: self, selector: #selector(step))
+        let fastest = Float(window?.screen?.maximumFramesPerSecond ?? 60)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: fastest, preferred: fastest)
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        // A move to a screen with another top rate asks for that rate.
+        if let link, let screen = window?.screen {
+            let fastest = Float(screen.maximumFramesPerSecond)
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: fastest, preferred: fastest)
+        }
+    }
+
+    @objc private func step(_ link: CADisplayLink) {
+        onFrame?(.now)
+    }
+}
+
 struct MetalScreen: NSViewRepresentable {
     let presenter: MetalPresenter
+    let onFrame: (Date) -> Void
 
-    func makeNSView(context: Context) -> MTKView {
-        let view = MTKView()
+    func makeNSView(context: Context) -> DisplayLinkedView {
+        let view = DisplayLinkedView()
         presenter.attach(view)
+        view.onFrame = onFrame
         return view
     }
 
-    func updateNSView(_ nsView: MTKView, context: Context) {}
+    func updateNSView(_ nsView: DisplayLinkedView, context: Context) {
+        nsView.onFrame = onFrame
+    }
+
+    static func dismantleNSView(_ nsView: DisplayLinkedView, coordinator: ()) {
+        nsView.onFrame = nil
+    }
 }
