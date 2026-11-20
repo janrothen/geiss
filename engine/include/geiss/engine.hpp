@@ -63,6 +63,8 @@ bool lookAllowed(int mode, int waveform);
 // with 6 less likely, re-rolled until the pair is allowed.
 Look randomLook(Random& random);
 
+// RGB is the palette color. Alpha carries the pixel's highlight level (see `highlightLevels`),
+// so a presenter can pick out the highlights. The picture itself is opaque.
 struct FrameView {
     const std::uint8_t* rgba = nullptr;
     int width = 0;

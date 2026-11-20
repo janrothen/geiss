@@ -41,6 +41,7 @@ struct InfoSnapshot: Equatable {
     var map: String
     var wave: String
     var effects: String
+    var hdr: String
 }
 
 enum PreviewSource: String {
@@ -224,11 +225,23 @@ final class VisualizerModel: ObservableObject {
             fps: fps,
             map: "\(look.mapMode) \(look.mapName)",
             wave: wave,
-            effects: Self.effectsLine(look)
+            effects: Self.effectsLine(look),
+            hdr: Self.hdrLine(
+                gain: presenter.highlightGain,
+                headroom: presenter.headroom,
+                potential: presenter.potentialHeadroom
+            )
         )
         if snapshot != info {
             info = snapshot
         }
+    }
+
+    // An HDR screen can have no headroom for a moment, for example at full brightness.
+    private static func hdrLine(gain: Float, headroom: Float, potential: Float) -> String {
+        guard potential > 1 else { return "off (SDR screen)" }
+        guard headroom > 1 else { return String(format: "no headroom now (up to %.1f×)", potential) }
+        return String(format: "highlights %.1f× (headroom %.1f× of %.1f×)", gain, headroom, potential)
     }
 
     private static func effectsLine(_ look: GeissLookInfo) -> String {

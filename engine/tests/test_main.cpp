@@ -43,6 +43,7 @@
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <set>
@@ -873,6 +874,58 @@ void testFadeMatchesAtAnyFrameRate() {
     check(geiss::ditherThreshold(3, 4, 1) != geiss::ditherThreshold(3, 4, 2), "the rounding pattern changes with the seed");
 }
 
+void testAlphaCarriesTheLevel() {
+    geiss::Engine engine(1);
+    engine.resize(32, 24);
+    engine.setEffects({});
+    geiss::PaletteRecipe plain;
+    plain.curves = {2, 2, 2};
+    engine.setPalette(plain);
+    engine.setSlideShiftAllowed(false);
+    const geiss::FrameView frame = engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    // Every pixel's color and alpha come from one palette entry and its highlight level.
+    const geiss::Palette& palette = engine.paletteColors();
+    const geiss::HighlightLevels levels = geiss::highlightLevels(palette);
+    std::set<std::array<int, 4>> entries;
+    for (std::size_t n = 0; n < levels.size(); ++n) {
+        entries.insert({palette[n * 3], palette[n * 3 + 1], palette[n * 3 + 2], levels[n]});
+    }
+    int brightest = 0;
+    bool matches = true;
+    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        const std::uint8_t* pixel = frame.rgba + i * 4;
+        brightest = std::max(brightest, static_cast<int>(pixel[3]));
+        matches = matches && entries.contains({pixel[0], pixel[1], pixel[2], pixel[3]});
+    }
+    check(brightest == 255, "a full-brightness line carries level 255 in alpha");
+    check(matches, "alpha is the highlight level of the entry each color came from");
+}
+
+void testHighlightLevels() {
+    geiss::PaletteRecipe plain;
+    plain.curves = {2, 2, 2};
+    const geiss::HighlightLevels flat = geiss::highlightLevels(geiss::buildPalette(plain, false));
+    bool capped = true;
+    for (std::size_t n = 0; n < flat.size(); ++n) {
+        capped = capped && flat[n] <= n;
+    }
+    check(capped, "no level is above its index");
+    check(flat[255] == 255, "the top of a rising palette is a full highlight");
+    check(flat[0] == 0, "index 0 is never a highlight");
+
+    // Curve 6 tops out near 194, while the band doubles 201...249 to a clamped 255.
+    geiss::PaletteRecipe banded;
+    banded.curves = {6, 6, 6};
+    banded.lowBand = 200;
+    banded.highBand = 250;
+    const geiss::HighlightLevels band = geiss::highlightLevels(geiss::buildPalette(banded, false));
+    check(band[249] == 249, "the brightest fresh entries keep their index");
+    check(band[255] < 204, "a top entry dimmer than the palette's brightest does not glow");
+
+    check(geiss::highlightLevels(geiss::Palette{}) == geiss::HighlightLevels{}, "a black palette has no highlights");
+}
+
 void testBassAverage() {
     geiss::BeatDetector detector;
     geiss::BeatState state;
@@ -1693,6 +1746,8 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testPeakRelaxes();
     testWarpShift();
     testBassAverage();
+    testAlphaCarriesTheLevel();
+    testHighlightLevels();
     testFadeMatchesAtAnyFrameRate();
     testSilenceFadesAtAnyFrameRate();
     testEngineSlideShift();
