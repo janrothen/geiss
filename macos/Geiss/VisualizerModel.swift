@@ -227,6 +227,7 @@ final class VisualizerModel: ObservableObject {
             wave: wave,
             effects: Self.effectsLine(look),
             hdr: Self.hdrLine(
+                enabled: presenter.highlightsOn,
                 gain: presenter.highlightGain,
                 headroom: presenter.headroom,
                 potential: presenter.potentialHeadroom
@@ -237,9 +238,17 @@ final class VisualizerModel: ObservableObject {
         }
     }
 
-    // An HDR screen can have no headroom for a moment, for example at full brightness.
-    private static func hdrLine(gain: Float, headroom: Float, potential: Float) -> String {
-        guard potential > 1 else { return "off (SDR screen)" }
+    // An HDR screen can have no headroom for a moment, for example at full brightness. An SDR
+    // screen can offer a little headroom below full brightness, which highlights do not use.
+    private static func hdrLine(enabled: Bool, gain: Float, headroom: Float, potential: Float) -> String {
+        guard enabled else {
+            guard potential > 1 else { return "off (SDR screen)" }
+            return String(
+                format: "off (screen reaches %.1f×, needs %.1f×)",
+                potential,
+                MetalPresenter.highlightCap
+            )
+        }
         guard headroom > 1 else { return String(format: "no headroom now (up to %.1f×)", potential) }
         return String(format: "highlights %.1f× (headroom %.1f× of %.1f×)", gain, headroom, potential)
     }
