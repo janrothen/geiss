@@ -39,7 +39,7 @@ Build a modernized Geiss visualizer for Apple Silicon Macs. Preserve the recogni
   - Analysis, in portable C++, turns that PCM into one immutable frame: samples, level, peak, volume and its average, silence, time, and the beat state (bass, beat mode, beat brightness, and big-beat ratio).
   - The renderer reads only that frame.
 - A stalled consumer keeps the latest frame and drops older audio.
-- The frame carries one mono sample per simulation column, and a left and a right sample on that same grid, resampled from the tap rate into about −1…1. A one-channel block copies its sample into both sides. Level is the RMS of the mono samples. Silence means that level has stayed low for about half a second of wall time, measured between analyzed blocks rather than from their length, because successive snapshots of the ring overlap. One rising-edge alignment rotates the mono, left, and right columns together so the waveform holds in place.
+- The frame carries one mono sample per simulation column, and a left and a right sample on that same grid, resampled from the tap rate into about −1…1. A one-channel block copies its sample into both sides. Level is the RMS of the mono samples. Silence means that level has stayed low for about half a second of wall time, measured between analyzed blocks rather than from their length, because successive snapshots of the ring overlap. The columns span columns / 88200 s of the newest audio, about 11 ms at 960 columns, as the original read one stereo frame for every two columns at 44.1 kHz. The span does not depend on how long the analyzed block is, so the tap's 2048-frame snapshot and Visual > Tone draw the same line. Following the original's level trigger, the window starts at the newest rising zero crossing that leaves a whole window, searched back up to one window, so the waveform holds in place. Mono, left, and right share that window. Intentional difference: the trigger does not match height and slope with the previous frame. Visual > Tone is a 220 Hz sine delivered as a 2048-frame block, like a tap snapshot.
 - The engine runs on the main thread. The capture callback only copies samples.
 - Waveform brightness follows RenderWave: `base = volume*4 + averageVolume*0.4 - 10`, clamped to 0…155, where volume is the peak-to-peak of the newest 1/30 s on the original's 0…256 scale (after sensitivity) and the average smooths it like `avg_vol`. That range maps onto the full palette, so normal listening levels draw at full brightness and quiet passages dim. Beats scale it further when a beat is on (see [Beat response](#beat-response)).
 
@@ -158,7 +158,7 @@ Intentional differences:
 
 The window opens on mode 25 and waveform 1, with its own effects. Another pair is chosen about every 20 seconds unless the visual is locked. Next chooses one immediately. Pause freezes the picture and that timer. The oscilloscope rock advances while the picture is moving, including while locked, and holds while paused. Chunked background generation waits.
 
-The index buffer and hue-cycle palette are unchanged. The window listens to the default output mix. Visual > Tone and Visual > Silence override that source. The tap keeps running during an override.
+The index buffer and hue-cycle palette are unchanged. The window listens to the default output mix. Visual > Tone (⌘1) and Visual > Silence (⌘2) override that source for testing, and Visual > System Audio (⌘0) returns to it. The tap keeps running during an override.
 
 ## Project layout and code policy
 

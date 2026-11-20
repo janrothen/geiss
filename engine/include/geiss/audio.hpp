@@ -73,8 +73,10 @@ struct AudioFrame {
 };
 
 // Turns PCM into an AudioFrame, including the beat state from BeatDetector.
-// Follows the level-trigger idea in GetWaveData with a simpler rising-edge rotate.
-// The same rotation is applied to the mono, left, and right columns.
+// The columns span columns / 88200 s of the newest audio, as the original's one stereo
+// frame per two columns at 44.1 kHz did, whatever the block length. Following the level
+// trigger in GetWaveData, that window starts at a rising zero crossing, and the mono, left,
+// and right columns share it.
 // The silence hold counts the time between blocks, from `PcmBlock::time`, so overlapping
 // blocks and the caller's frame rate do not change it. When the time does not advance,
 // the block's own duration counts instead.
