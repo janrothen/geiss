@@ -137,6 +137,8 @@ private:
     EffectSet effects_{};
     EffectLayer effectLayer_;
     SlideShift slideShift_;
+    // Changes the warp's rounding pattern every tick.
+    std::uint32_t ditherSeed_ = 0;
     // Whether the latest audio had sound. Effects for a new look are picked with it.
     bool soundActive_ = false;
     // Seconds of unbroken silence. A palette picked after a long silence is brighter.

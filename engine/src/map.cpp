@@ -465,7 +465,8 @@ void buildMap(std::vector<SourcePoint>& out, int width, int height, const MapPar
 }
 
 void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
-                 const SourcePoint* map, float step, float decay, float shiftX, float shiftY) {
+                 const SourcePoint* map, float step, float decay, float shiftX, float shiftY,
+                 std::uint32_t ditherSeed) {
     if (width < 2 || height < 2 || src == nullptr || dst == nullptr || map == nullptr) {
         return;
     }
@@ -498,9 +499,26 @@ void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int heig
             const float bottom = p01 * (1.f - fx) + p11 * fx;
             float value = (top * (1.f - fy) + bottom * fy) * decay;
             value = std::clamp(value, 0.f, 255.f);
-            dst[index] = static_cast<std::uint8_t>(value + 0.5f);
+            // Intentional difference: the original truncated its weighted sum, which at 30 fps
+            // took about one level off every frame. Plain rounding would keep a small
+            // per-frame darkening from ever landing at high frame rates, so trails would stop
+            // fading. Random rounding keeps the expected value at any frame rate.
+            dst[index] = static_cast<std::uint8_t>(std::min(value + ditherThreshold(x, y, ditherSeed), 255.f));
         }
     }
+}
+
+float ditherThreshold(int x, int y, std::uint32_t seed) {
+    // lowbias32 over the pixel and the seed: cheap, and with no visible pattern.
+    std::uint32_t h = static_cast<std::uint32_t>(x) * 0x9E3779B1u ^ static_cast<std::uint32_t>(y) * 0x85EBCA77u ^
+                      seed * 0xC2B2AE3Du;
+    h ^= h >> 16;
+    h *= 0x7FEB352Du;
+    h ^= h >> 15;
+    h *= 0x846CA68Bu;
+    h ^= h >> 16;
+    // The top 24 bits give 0...1 - 2^-24, so a whole value never rounds up.
+    return static_cast<float>(h >> 8) * (1.f / 16777216.f);
 }
 
 int weightNumerator(int width, int height) {

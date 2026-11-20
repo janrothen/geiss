@@ -829,6 +829,50 @@ void testEngineSlideShift() {
     check(engine.slideShift().allowed() && engine.slideShift().count() == 10, "a locked look keeps shifting on peaks");
 }
 
+// Mean of a uniform 100 buffer after one second of the 255/256 darkening at `fps`,
+// through an identity map.
+float fadeAfterOneSecond(int fps) {
+    constexpr int width = 64;
+    constexpr int height = 32;
+    std::vector<geiss::SourcePoint> identity;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            identity.push_back({static_cast<float>(x), static_cast<float>(y)});
+        }
+    }
+    std::vector<std::uint8_t> a(std::size_t{width} * height, 100);
+    std::vector<std::uint8_t> b(a.size(), 0);
+    const auto decay = static_cast<float>(std::pow(255.0 / 256.0, 30.0 / fps));
+    for (int i = 0; i < fps; ++i) {
+        geiss::warpIndices(a.data(), b.data(), width, height, identity.data(), 1.f, decay, 0.f, 0.f,
+                           static_cast<std::uint32_t>(i + 1));
+        a.swap(b);
+    }
+    double sum = 0;
+    for (const std::uint8_t value : a) {
+        sum += value;
+    }
+    return static_cast<float>(sum / static_cast<double>(a.size()));
+}
+
+void testFadeMatchesAtAnyFrameRate() {
+    const float expected = 100.f * static_cast<float>(std::pow(255.0 / 256.0, 30.0));
+    checkNear(fadeAfterOneSecond(30), expected, 1.f, "a second of darkening at 30 fps");
+    checkNear(fadeAfterOneSecond(60), expected, 1.f, "a second of darkening at 60 fps matches 30 fps");
+    checkNear(fadeAfterOneSecond(120), expected, 1.f, "a second of darkening at 120 fps matches 30 fps");
+
+    double total = 0;
+    for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < 64; ++x) {
+            const float t = geiss::ditherThreshold(x, y, 7);
+            check(t >= 0.f && t < 1.f, "a rounding threshold is in 0...1");
+            total += t;
+        }
+    }
+    checkNear(static_cast<float>(total / 4096.0), 0.5f, 0.02f, "rounding thresholds average one half");
+    check(geiss::ditherThreshold(3, 4, 1) != geiss::ditherThreshold(3, 4, 2), "the rounding pattern changes with the seed");
+}
+
 void testBassAverage() {
     geiss::BeatDetector detector;
     geiss::BeatState state;
@@ -1601,6 +1645,34 @@ void testEngineEffects() {
     check(nuclideMatches, "the map knows whether its look has the nuclide");
 }
 
+// Average red after six seconds of silence that follow two seconds of sound, at `fps`.
+double silentFade(double fps) {
+    geiss::Engine engine = engineShowing(25, 160, 90);
+    engine.setLocked(true);
+    const geiss::AudioFrame loud = beatFrame(false, 1.f, 0.f);
+    for (int i = 0; i < static_cast<int>(2 * fps); ++i) {
+        engine.tick(1.0 / fps, loud);
+    }
+    geiss::AudioFrame quiet;
+    quiet.silent = true;
+    geiss::FrameView frame{};
+    for (int i = 0; i < static_cast<int>(6 * fps); ++i) {
+        frame = engine.tick(1.0 / fps, quiet);
+    }
+    double red = 0;
+    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        red += frame.rgba[i * 4];
+    }
+    return red / static_cast<double>(pixels);
+}
+
+void testSilenceFadesAtAnyFrameRate() {
+    check(silentFade(30) < 1.0, "the picture fades out in silence at 30 fps");
+    check(silentFade(60) < 1.0, "the picture fades out in silence at 60 fps");
+    check(silentFade(120) < 1.0, "the picture fades out in silence at 120 fps");
+}
+
 }  // namespace
 
 int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed allocation
@@ -1621,6 +1693,8 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testPeakRelaxes();
     testWarpShift();
     testBassAverage();
+    testFadeMatchesAtAnyFrameRate();
+    testSilenceFadesAtAnyFrameRate();
     testEngineSlideShift();
     testPaletteCurves();
     testBuildPalette();

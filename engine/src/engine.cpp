@@ -486,7 +486,7 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
                       mapParameters_.centerYNorm * static_cast<float>(height_), dt * kReferenceFps, audio);
     // The original added slider1 to the source pointer once per frame, whatever the map's damping.
     warpIndices(front_.data(), back_.data(), width_, height_, map_.data(), step, decay,
-                slideShift_.x() * frameStep, slideShift_.y() * frameStep);
+                slideShift_.x() * frameStep, slideShift_.y() * frameStep, ++ditherSeed_);
     if (!effects_.hideWaveform) {
         drawWaveform(back_.data(), width_, height_, audio, waveform_, mapParameters_.mode, mapParameters_.centerXNorm,
                      mapParameters_.centerYNorm, static_cast<float>(motionTime_));
