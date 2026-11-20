@@ -48,7 +48,7 @@ Build a modernized Geiss visualizer for Apple Silicon Macs. Preserve the recogni
 - Detection is bass-focused. Two one-pole low-pass stages at 150 Hz run across each block, and the bass level is the RMS of its newest 1/30 s. Intentional difference: the original measured the composite volume.
 - The detector ports the original's beat logic (`main.cpp`: beat mode, the beat-mode brightness, and `bBigBeat`). A smoothed bass level feeds a history of 120 samples written at a fixed 30 per second of elapsed time, so frame rate and overlapping blocks do not change it.
 - Beat mode turns on when that history is evenly bumpy, using the original's strength measure and its 109/71 hysteresis. A quiet history (smoothed bass below 0.01 RMS) is never in beat mode. A steady tone, hi-hats alone, or a sustained bass note stay out of beat mode.
-- In beat mode, the waveform brightness scales from 0 at the average bass to full at half a standard deviation above it, so the line flashes on hits and goes dark between them. A hit draws at the top of the palette, which is white-hot, so it stands out from the glowing trails. The X-Y oscilloscope keeps its steady brightness, as in the original.
+- In beat mode, the waveform brightness scales from 0 at the average bass to full at half a standard deviation above it, so the line flashes on hits and goes dark between them. A hit draws at the top of the palette, its brightest entry, so it stands out from the dimmer trails. The palette has no white-hot top, as in the original, so how strongly a hit stands out depends on the palette. The X-Y oscilloscope keeps its steady brightness, as in the original.
 - When the 20-second timer is due in beat mode, the new look waits for a big beat: the smoothed bass over the loudest of the previous 4/3 s, against a threshold that starts at 1.10. Intentional difference: the threshold relaxes by 0.2 over a 5-second wait instead of the original's 18 seconds, and the look changes when the wait ends. A steady beat therefore lands the change on a hit after about 1.3 s, and a louder hit lands it at once.
 - Lock still holds the look. Next still switches at once. Pause freezes the timer and the wait.
 - The horizontal slide shift on beats waits. There is no beat control.
@@ -59,7 +59,13 @@ Build a modernized Geiss visualizer for Apple Silicon Macs. Preserve the recogni
 - Preserve the existing visualization algorithms and their visual intent in portable C++ where practical.
 - In the first version, Metal uploads the RGBA8 buffer and scales it. A GPU warp can be considered later if CPU cost calls for it.
 - Each tick draws the look's effects into the previous index buffer, warps it through the current map, darkens it, draws the waveform, and then expands the palette to RGBA8.
-- The prototype palette is one 256-color hue cycle. Its phase turns with time. The top 15% of indices blends from the hue toward white, eased in, so a freshly drawn full-brightness line glows white and fades back into the hue within about 0.7 s at the original decay rate. Audio-linked palettes wait. That difference is noted beside the ported code.
+- Palettes port the original's generator (`video.h`: `FX_Random_Palette`, `CrankPal`, `PutPalette`) in `engine/src/palette.cpp`, at the original's default settings: gamma 10, coarse frequency 1, and solar frequency 1. None of these is a control.
+  - One palette in 6 is a *monotone* palette from the original FX: one of four orderings of `a²/64`, `2a`, and `√a·22.6` across the channels, ramping over indices 0…127 and holding the 127 value above that. It has no gamma and no coarse band.
+  - The others take one `CrankPal` curve per channel: `√n·22.6`, `2n`, `n²/64`, `255·sin(n/256·π/2)`, `3.5n`, the dark `1.5^(n/20) − 1`, and the solar ripple `1.5n + 32 + 32·sin(0.3n)`. The solar curve is offered on 1 roll in 5. The pick re-rolls until at most one channel uses the dark curve. Each value is multiplied by 1.1, or by 1.4 when the palette is picked in silence, and clamped to 255. As in the original, the first curve drives red, the second blue, and the third green.
+  - One palette in 10 has a coarse band: the indices strictly between a low edge of 7…12 and a high edge of 17…22 are doubled, which draws a bright ring in the fading trails.
+  - The solar curve does not start at black, so a palette that uses it tints the whole background, as in the original.
+  - There is no white-hot top, matching the original. Most curves saturate near index 128, so the upper half of the palette is the look's full color.
+- Each new look picks a new palette, as the original did with each new map. Next and the 20-second timer change it, lock holds it, and pause freezes it. The window's first palette appears at once. Later ones blend linearly from the old palette over 0.3 s, which is the original's 18 blend steps, counted down twice per frame at 30 fps. The blend runs on elapsed time. Audio-linked color waits.
 - Presentation follows the display. Simulation time is elapsed seconds. A large gap after sleep or wake is capped so the picture does not jump.
 - Simulation resolution is independent of the display. The longest side is capped at 960, and the aspect ratio follows the window.
 
@@ -158,7 +164,7 @@ Intentional differences:
 
 The window opens on mode 25 and waveform 1, with its own effects. Another pair is chosen about every 20 seconds unless the visual is locked. Next chooses one immediately. Pause freezes the picture and that timer. The oscilloscope rock advances while the picture is moving, including while locked, and holds while paused. Chunked background generation waits.
 
-The index buffer and hue-cycle palette are unchanged. The window listens to the default output mix. Visual > Tone (⌘1) and Visual > Silence (⌘2) override that source for testing, and Visual > System Audio (⌘0) returns to it. The tap keeps running during an override.
+The index buffer is unchanged, and each look picks a palette from the original's generator. The window listens to the default output mix. Visual > Tone (⌘1) and Visual > Silence (⌘2) override that source for testing, and Visual > System Audio (⌘0) returns to it. The tap keeps running during an override.
 
 ## Project layout and code policy
 
@@ -201,7 +207,7 @@ The Windows project has a substantial set of rendering behaviors and options. So
 
 - **Vertical visual size / letterboxing:** percentage of display height occupied by the visual. Deferred. The first version is full-bleed.
 - **Wave scaling:** default audio waveform amplitude. This is the first-version sensitivity control.
-- **Color behavior:** palette generation, gamma, coarse and solar palette frequency, and optional sound-synchronized color. The 8-bit palette-specific controls reflect old color modes. The prototype uses one cycling palette. Palette variety and optional audio-linked color remain later work.
+- **Color behavior:** palette generation, gamma, coarse and solar palette frequency, and optional sound-synchronized color. The 8-bit palette-specific controls reflect old color modes. The port picks palettes with the original's generator at its default gamma, coarse, and solar settings, which are not controls. Optional audio-linked color remains later work.
 - **Beat detection:** controls beat-responsive behavior. Beat brightness and look changes on a big beat follow the original, from a bass-focused detector. A user-facing beat control waits.
 - **Automatic map changes:** controls how long maps are generated and shown. The first version evolves automatically. A pace setting waits, and any later control uses seconds.
 - **Automatic horizontal shifting:** percentage and frequency, plus a minimum interval between shifts. Keep this only if it remains visually valuable. Any later timing is frame-rate independent.
@@ -221,7 +227,7 @@ The Windows project has a substantial set of rendering behaviors and options. So
 - Automatic variation: visuals evolve on their own. Pause freezes the picture. Lock holds the current map, waveform, and palette while audio motion continues. Next visual advances the look.
 - Initial controls: sensitivity, pause, lock, and next visual.
 - Pixels: portable C++ simulates 8-bit palette indices, then expands them to RGBA8. Metal uploads and scales that buffer.
-- Current picture: all 25 original map modes and all 6 waveforms, picked with the original's weights and excluded pairs. The window opens on mode 25 and waveform 1. Next and the 20-second timer pick a different pair. Each look also picks up to a few of the original's seven layered effects, with its per-map weights. Lock holds the pair, its effects, and the palette. Pause freezes the picture. One hue-cycle palette with a white-hot top. Each frame feeds back through the same warp. No new controls. Beats brighten the waveform and land look changes, from a bass-focused detector. The horizontal slide shift waits. Chunked map generation, a GPU warp, and the screen saver host wait.
+- Current picture: all 25 original map modes and all 6 waveforms, picked with the original's weights and excluded pairs. The window opens on mode 25 and waveform 1. Next and the 20-second timer pick a different pair. Each look also picks up to a few of the original's seven layered effects, with its per-map weights. Lock holds the pair, its effects, and the palette. Pause freezes the picture. Each look picks a palette from the original's generator, with no white-hot top, and blends to it over 0.3 s. Each frame feeds back through the same warp. No new controls. Beats brighten the waveform and land look changes, from a bass-focused detector. The horizontal slide shift waits. Chunked map generation, a GPU warp, and the screen saver host wait.
 - Launch: the visualizer opens immediately. Denied or failed capture keeps calm motion and shows an overlay that opens System Settings.
 
 ### Choices considered

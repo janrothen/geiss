@@ -36,8 +36,10 @@
 #include "geiss/beat.hpp"
 #include "geiss/engine.hpp"
 #include "geiss/map.hpp"
+#include "geiss/palette.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numbers>
 #include <cstdlib>
@@ -444,37 +446,139 @@ void testWaveBrightnessFollowsVolume() {
     check(colorSum(silentEngine.tick(1.0 / 30.0, silent)) == 0, "no volume draws no line");
 }
 
-// The whitest pixel: the largest smallest channel. 255 is pure white, 0 is a full hue or black.
-int whitestPixel(const geiss::FrameView& frame) {
-    int whitest = 0;
-    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
-    for (std::size_t i = 0; i < pixels; ++i) {
-        const int smallest = std::min({frame.rgba[i * 4], frame.rgba[i * 4 + 1], frame.rgba[i * 4 + 2]});
-        whitest = std::max(whitest, smallest);
-    }
-    return whitest;
+// Red, green, and blue of palette entry `n`.
+std::array<int, 3> entry(const geiss::Palette& palette, int n) {
+    const auto i = static_cast<std::size_t>(n) * 3;
+    return {palette[i], palette[i + 1], palette[i + 2]};
 }
 
-void testWhiteHotPaletteTop() {
-    geiss::AudioFrame full = beatFrame(false, 1.f, 0.f);
-    geiss::Engine fullEngine(1);
-    fullEngine.resize(32, 24);
-    fullEngine.setEffects({});
-    check(whitestPixel(fullEngine.tick(1.0 / 30.0, full)) > 245, "a full-brightness line is drawn white-hot");
+void testPaletteCurves() {
+    checkNear(geiss::paletteCurve(1, 100), 226.f, 0.01f, "curve 1 is sqrt(x) * 22.6");
+    checkNear(geiss::paletteCurve(2, 50), 100.f, 0.01f, "curve 2 is x * 2");
+    checkNear(geiss::paletteCurve(3, 64), 64.f, 0.01f, "curve 3 is x * x / 64");
+    checkNear(geiss::paletteCurve(4, 256), 255.f, 0.01f, "curve 4 is a quarter sine up to 255");
+    checkNear(geiss::paletteCurve(5, 20), 70.f, 0.01f, "curve 5 is x * 3.5");
+    checkNear(geiss::paletteCurve(6, 0), 0.f, 0.01f, "curve 6 starts black");
+    check(geiss::paletteCurve(6, 255) < 180.f, "curve 6 stays dark");
+    checkNear(geiss::paletteCurve(7, 0), 32.f, 0.01f, "curve 7 starts at a dim glow");
+}
 
-    geiss::AudioFrame dimmer = beatFrame(false, 1.f, 0.f);
-    dimmer.volume = 30.f;
-    dimmer.averageVolume = 30.f;
-    geiss::Engine dimmerEngine(1);
-    dimmerEngine.resize(32, 24);
-    dimmerEngine.setEffects({});
-    check(whitestPixel(dimmerEngine.tick(1.0 / 30.0, dimmer)) == 0, "below the top of the palette a line keeps its full hue");
+void testBuildPalette() {
+    geiss::PaletteRecipe monotone;
+    monotone.monotone = true;
+    monotone.monotoneOrder = 0;
+    monotone.lowBand = 7;
+    monotone.highBand = 17;
+    const geiss::Palette fx = geiss::buildPalette(monotone, true);
+    check(entry(fx, 0) == std::array<int, 3>{0, 0, 0}, "a monotone palette starts black");
+    // Order 0: red a*a/64, blue a*2, green sqrt(a)*22.6, truncated.
+    check(entry(fx, 127) == std::array<int, 3>{252, 254, 254}, "monotone order 0 at 127");
+    check(entry(fx, 200) == entry(fx, 127), "a monotone palette holds its 127 value above");
+    check(entry(fx, 10)[0] == 1, "the monotone route has no gamma and no coarse band");
 
-    geiss::AudioFrame half = beatFrame(true, 0.5f, 0.f);
-    geiss::Engine halfEngine(1);
-    halfEngine.resize(32, 24);
-    halfEngine.setEffects({});
-    check(whitestPixel(halfEngine.tick(1.0 / 30.0, half)) == 0, "a beat-mode line between hits is not white");
+    geiss::PaletteRecipe curves;
+    curves.curves = {2, 3, 1};
+    const geiss::Palette loud = geiss::buildPalette(curves, false);
+    // Red is the first curve, blue the second, and green the third, each times 1.1.
+    check(entry(loud, 50) == std::array<int, 3>{110, 175, 42}, "curves drive red, blue, and green in the original's order");
+    check(entry(loud, 255)[0] == 255, "curves clamp at 255");
+    const geiss::Palette quiet = geiss::buildPalette(curves, true);
+    check(entry(quiet, 50)[0] == 140, "a palette built in silence uses 0.3 more gamma");
+
+    curves.lowBand = 7;
+    curves.highBand = 17;
+    const geiss::Palette coarse = geiss::buildPalette(curves, false);
+    check(entry(coarse, 10)[0] == 44, "the coarse band doubles its indices");
+    check(entry(coarse, 7)[0] == 15 && entry(coarse, 17)[0] == 37, "the band edges stay normal");
+
+    geiss::PaletteRecipe solar;
+    solar.curves = {7, 6, 6};
+    check(entry(geiss::buildPalette(solar, false), 0)[0] == 35, "a solar curve tints index 0, as in the original");
+}
+
+void testBlendPalettes() {
+    geiss::Palette black{};
+    geiss::Palette white{};
+    white.fill(255);
+    check(geiss::blendPalettes(black, white, 0.f) == black, "a blend starts at the old palette");
+    check(geiss::blendPalettes(black, white, 1.f) == white, "a blend ends at the new palette");
+    check(entry(geiss::blendPalettes(black, white, 0.5f), 9)[1] == 128, "a blend is linear");
+}
+
+void testRandomPaletteRecipes() {
+    constexpr int draws = 60000;
+    geiss::Random random{21};
+    int monotone = 0;
+    int coarse = 0;
+    bool bandsInRange = true;
+    bool curvesInRange = true;
+    bool atMostOneDark = true;
+    std::array<int, 8> curveCounts{};
+    std::array<int, 4> orders{};
+    for (int i = 0; i < draws; ++i) {
+        const geiss::PaletteRecipe recipe = geiss::randomPaletteRecipe(random);
+        if (recipe.lowBand >= 0) {
+            ++coarse;
+            bandsInRange = bandsInRange && recipe.lowBand >= 7 && recipe.lowBand <= 12 && recipe.highBand >= 17 &&
+                           recipe.highBand <= 22;
+        }
+        if (recipe.monotone) {
+            ++monotone;
+            ++orders.at(static_cast<std::size_t>(recipe.monotoneOrder));
+            continue;
+        }
+        int dark = 0;
+        for (const int curve : recipe.curves) {
+            curvesInRange = curvesInRange && curve >= 1 && curve <= 7;
+            dark += curve == 6 ? 1 : 0;
+            ++curveCounts.at(static_cast<std::size_t>(std::clamp(curve, 0, 7)));
+        }
+        atMostOneDark = atMostOneDark && dark <= 1;
+    }
+    check(monotone > draws / 7 && monotone < draws / 5, "about 1 in 6 palettes is monotone");
+    check(coarse > draws / 12 && coarse < draws / 8, "about 1 in 10 palettes has a coarse band");
+    check(bandsInRange, "the coarse band runs from 7...12 to 17...22");
+    check(curvesInRange, "curves are 1...7");
+    check(atMostOneDark, "at most one channel uses the dark curve");
+    check(curveCounts[7] > 0 && curveCounts[7] < curveCounts[1] / 3, "the solar curve comes up rarely");
+    check(orders[0] > 0 && orders[1] > 0 && orders[2] > 0 && orders[3] > 0, "every monotone order comes up");
+}
+
+void testEnginePalettes() {
+    geiss::Engine locked(4);
+    locked.resize(64, 48);
+    locked.setLocked(true);
+    const geiss::PaletteRecipe held = locked.palette();
+    for (int i = 0; i < 300; ++i) {
+        locked.tick(0.1, beatFrame(false, 1.f, 0.f));
+    }
+    check(locked.palette() == held, "lock holds the palette");
+
+    geiss::Engine next(4);
+    next.resize(64, 48);
+    const geiss::PaletteRecipe first = next.palette();
+    bool changed = false;
+    for (int i = 0; i < 10 && !changed; ++i) {
+        next.nextVisual();
+        changed = !(next.palette() == first);
+    }
+    check(changed, "Next picks a new palette");
+
+    // A full-brightness line draws at the top of a plain x * 2 palette: 255 * 2 * 1.1, clamped.
+    geiss::Engine top(1);
+    top.resize(32, 24);
+    top.setEffects({});
+    geiss::PaletteRecipe plain;
+    plain.curves = {2, 2, 2};
+    top.setPalette(plain);
+    const geiss::FrameView frame = top.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    int brightest = 0;
+    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        brightest = std::max(brightest, static_cast<int>(frame.rgba[i * 4]));
+    }
+    check(brightest == 255, "a full-brightness line draws at the palette's top");
+    check(top.palette() == plain, "setPalette replaces the palette");
 }
 
 geiss::MapParameters centeredMap(int mode) {
@@ -1244,7 +1348,11 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testLookWaitsForBigBeat();
     testVolumeScale();
     testWaveBrightnessFollowsVolume();
-    testWhiteHotPaletteTop();
+    testPaletteCurves();
+    testBuildPalette();
+    testBlendPalettes();
+    testRandomPaletteRecipes();
+    testEnginePalettes();
     testEveryModeBuildsAFiniteMap();
     testModeDampingAndDecay();
     testNewModeShapes();

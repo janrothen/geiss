@@ -37,6 +37,7 @@
 #include "geiss/audio.hpp"
 #include "geiss/effects.hpp"
 #include "geiss/map.hpp"
+#include "geiss/palette.hpp"
 
 #include <cstdint>
 
@@ -92,6 +93,11 @@ public:
     void setEffects(const EffectSet& effects);
     int height() const { return height_; }
 
+    // The current look's palette. Each new look picks its own and blends to it.
+    const PaletteRecipe& palette() const { return paletteRecipe_; }
+    // Replaces the palette at once, without a blend.
+    void setPalette(const PaletteRecipe& recipe);
+
     // `dt` is seconds. Gaps longer than 0.1s count as 0.1s.
     // The returned pointer is valid until the next tick or resize.
     FrameView tick(double dt, const AudioFrame& audio);
@@ -100,6 +106,7 @@ private:
     void pickLook();
     void pickEffects();
     void rebuildMap();
+    void pickPalette(bool blend);
     void expandPalette(const std::uint8_t* indices);
 
     int width_ = 0;
@@ -111,7 +118,12 @@ private:
     double mapElapsed_ = 0;
     // Seconds the picture has been moving. Pause holds it. Lock does not.
     double motionTime_ = 0;
-    float phase_ = 0;
+    PaletteRecipe paletteRecipe_{};
+    Palette palette_{};
+    Palette fromPalette_{};
+    Palette targetPalette_{};
+    // Seconds left in the blend from `fromPalette_` to `targetPalette_`.
+    double paletteBlendLeft_ = 0;
     MapParameters mapParameters_{};
     Random random_;
     EffectSet effects_{};

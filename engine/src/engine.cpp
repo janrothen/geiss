@@ -45,7 +45,9 @@ namespace {
 constexpr double kReferenceFps = 30.0;
 constexpr double kMaxDt = 0.1;
 constexpr double kMapInterval = 20.0;
-constexpr float kHuePeriod = 24.f;
+// PutPalette blended to a new palette over 18 steps, counted down twice per frame:
+// about 9 frames, or 0.3 s at 30 fps.
+constexpr double kPaletteBlendSeconds = 0.3;
 // When a look is due during beat mode, it waits for a big beat, as the finished map did in
 // the original. The threshold starts at 1.10 and relaxes by 0.2.
 // Intentional difference: the original relaxed over its 550-frame (about 18 s) switch
@@ -63,39 +65,6 @@ bool lookMayChange(double overdue, const AudioFrame& audio) {
     }
     const auto threshold = kBigBeatThreshold - kBigBeatRelax * static_cast<float>(overdue / kBigBeatRelaxSeconds);
     return audio.bigBeatRatio > threshold;
-}
-
-void hsv(float hue, float value, std::uint8_t& r, std::uint8_t& g, std::uint8_t& b) {
-    hue = hue - std::floor(hue);
-    const float h = hue * 6.f;
-    const int sector = static_cast<int>(h);
-    const float fraction = h - static_cast<float>(sector);
-    const float p = 0.f;
-    const float q = 1.f - fraction;
-    const float t = fraction;
-    float rf = 0;
-    float gf = 0;
-    float bf = 0;
-    switch (sector % 6) {
-        case 0: rf = 1; gf = t; bf = p; break;
-        case 1: rf = q; gf = 1; bf = p; break;
-        case 2: rf = p; gf = 1; bf = t; break;
-        case 3: rf = p; gf = q; bf = 1; break;
-        case 4: rf = t; gf = p; bf = 1; break;
-        default: rf = 1; gf = p; bf = q; break;
-    }
-    r = static_cast<std::uint8_t>(std::clamp(rf * value, 0.f, 1.f) * 255.f + 0.5f);
-    g = static_cast<std::uint8_t>(std::clamp(gf * value, 0.f, 1.f) * 255.f + 0.5f);
-    b = static_cast<std::uint8_t>(std::clamp(bf * value, 0.f, 1.f) * 255.f + 0.5f);
-}
-
-// The top `kWhiteHotSpan` of the palette blends from the hue toward white, eased in.
-// At the original decay rate (about 0.992 per 1/30 s), a trail fades out of it in about 0.7 s.
-constexpr float kWhiteHotSpan = 0.15f;
-
-float whiteHot(float value) {
-    const float t = std::clamp((value - (1.f - kWhiteHotSpan)) / kWhiteHotSpan, 0.f, 1.f);
-    return t * t * (3.f - 2.f * t);
 }
 
 // A -1...1 sample covers about 35% of the height. The original scaled 16-bit capture
@@ -344,6 +313,7 @@ Look randomLook(Random& random) {
 Engine::Engine(std::uint32_t seed) : effectLayer_(seed ^ 0x5BD1E995u) {
     random_.state = seed == 0 ? 1u : seed;
     pickEffects();
+    pickPalette(false);
     resize(960, 540);
 }
 
@@ -395,6 +365,26 @@ void Engine::pickLook() {
     mapParameters_ = randomMapParameters(picked.mode, width_, height_, random_);
     waveform_ = picked.waveform;
     pickEffects();
+    pickPalette(true);
+}
+
+// FX_Random_Palette ran with each new map. Like the effects, it reads whether there was sound.
+void Engine::pickPalette(bool blend) {
+    paletteRecipe_ = randomPaletteRecipe(random_);
+    fromPalette_ = palette_;
+    targetPalette_ = buildPalette(paletteRecipe_, !soundActive_);
+    paletteBlendLeft_ = blend ? kPaletteBlendSeconds : 0;
+    if (!blend) {
+        palette_ = targetPalette_;
+    }
+}
+
+void Engine::setPalette(const PaletteRecipe& recipe) {
+    paletteRecipe_ = recipe;
+    targetPalette_ = buildPalette(paletteRecipe_, !soundActive_);
+    palette_ = targetPalette_;
+    paletteBlendLeft_ = 0;
+    expandPalette(front_.data());
 }
 
 void Engine::pickEffects() {
@@ -426,30 +416,12 @@ void Engine::rebuildMap() {
 }
 
 void Engine::expandPalette(const std::uint8_t* indices) {
-    std::uint8_t palette[256 * 3];
-    palette[0] = 0;
-    palette[1] = 0;
-    palette[2] = 0;
-    for (std::size_t i = 1; i < 256; ++i) {
-        const float value = static_cast<float>(i) / 255.f;
-        // One hue cycle. Low indices stay dark so the warp fades toward black.
-        // Intentional difference: this is not the original palette generator.
-        std::uint8_t* color = &palette[i * 3];
-        hsv(phase_ + 0.08f * value, value, color[0], color[1], color[2]);
-        // The top of the palette turns white-hot, so a freshly drawn full-brightness line,
-        // such as a beat hit, stands out from the decaying trails around it.
-        const float white = whiteHot(value);
-        for (std::size_t channel = 0; channel < 3; ++channel) {
-            const float hue = static_cast<float>(color[channel]);
-            color[channel] = static_cast<std::uint8_t>(hue + (255.f * value - hue) * white + 0.5f);
-        }
-    }
     const std::size_t count = static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
     for (std::size_t i = 0; i < count; ++i) {
-        const std::size_t index = indices[i];
-        rgba_[i * 4] = palette[index * 3];
-        rgba_[i * 4 + 1] = palette[index * 3 + 1];
-        rgba_[i * 4 + 2] = palette[index * 3 + 2];
+        const std::size_t index = static_cast<std::size_t>(indices[i]) * 3;
+        rgba_[i * 4] = palette_[index];
+        rgba_[i * 4 + 1] = palette_[index + 1];
+        rgba_[i * 4 + 2] = palette_[index + 2];
         rgba_[i * 4 + 3] = 255;
     }
 }
@@ -474,14 +446,19 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
 
     soundActive_ = !audio.silent && !audio.samples.empty();
     if (!locked_) {
-        phase_ += static_cast<float>(dt) / kHuePeriod;
-        phase_ -= std::floor(phase_);
         mapElapsed_ += dt;
         if (mapElapsed_ >= kMapInterval && lookMayChange(mapElapsed_ - kMapInterval, audio)) {
             pickLook();
             mapElapsed_ = 0;
             rebuildMap();
         }
+    }
+
+    // The blend finishes even while locked, since lock only stops new picks.
+    if (paletteBlendLeft_ > 0) {
+        paletteBlendLeft_ = std::max(paletteBlendLeft_ - dt, 0.0);
+        palette_ = blendPalettes(fromPalette_, targetPalette_,
+                                 static_cast<float>(1.0 - paletteBlendLeft_ / kPaletteBlendSeconds));
     }
 
     motionTime_ += dt;
