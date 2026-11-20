@@ -50,7 +50,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL waveformHidden;
 // The look's effects in the original's order. Chasers reads "Chasers x2" for two.
 @property (nonatomic, readonly, copy) NSArray<NSString *> *effects;
-// True while the latest audio is silent, so the effects rest.
+// True while the engine last ticked in silence, so the effects rest.
 @property (nonatomic, readonly) BOOL resting;
 
 @end

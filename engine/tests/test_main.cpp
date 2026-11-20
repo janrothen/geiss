@@ -1117,6 +1117,8 @@ void testNames() {
     }
     check(effects.size() == static_cast<std::size_t>(geiss::kEffectCount), "effect names are unique");
     check(std::string(geiss::effectName(geiss::Effect::Shade)) == "Shade bobs", "Shade is shade bobs");
+    check(std::string(geiss::effectName(static_cast<geiss::Effect>(geiss::kEffectCount))) == "?",
+          "an unknown effect has no name");
 
     std::set<std::string> waves;
     for (int waveform = geiss::kFirstWaveform; waveform <= geiss::kLastWaveform; ++waveform) {
@@ -1127,6 +1129,25 @@ void testNames() {
     check(waves.size() == static_cast<std::size_t>(geiss::kLastWaveform), "waveform names are unique");
     check(std::string(geiss::waveformName(6)) == "Oscilloscope", "waveform 6 is the oscilloscope");
     check(std::string(geiss::waveformName(7)) == "?", "waveform 7 has no name");
+}
+
+void testSoundActive() {
+    geiss::Engine engine(3);
+    engine.resize(32, 24);
+    check(!engine.soundActive(), "a new engine has heard nothing");
+    engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    check(engine.soundActive(), "samples make the engine active");
+    geiss::AudioFrame quiet = beatFrame(false, 1.f, 0.f);
+    quiet.silent = true;
+    engine.tick(1.0 / 30.0, quiet);
+    check(!engine.soundActive(), "silence rests the effects");
+    engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    engine.setPaused(true);
+    engine.tick(1.0 / 30.0, quiet);
+    check(engine.soundActive(), "pause holds the last sound state");
+    engine.setPaused(false);
+    engine.tick(1.0 / 30.0, geiss::AudioFrame{});
+    check(!engine.soundActive(), "no samples rests the effects");
 }
 
 void testEngineEffects() {
@@ -1197,6 +1218,7 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testMode5FollowsNuclide();
     testEngineEffects();
     testNames();
+    testSoundActive();
     if (failures != 0) {
         std::cerr << failures << " failed\n";
         return EXIT_FAILURE;

@@ -196,15 +196,23 @@ final class VisualizerModel: ObservableObject {
         }
         let elapsed = date.timeIntervalSince(start)
         guard elapsed >= Self.infoInterval else { return }
-        fps = Int((Double(fpsWindowFrames) / elapsed).rounded())
         fpsWindowStart = date
-        fpsWindowFrames = 0
-        refreshInfo()
+        defer { fpsWindowFrames = 0 }
+        // The timeline stops while the window is hidden. A window spanning that gap
+        // would read near zero, so start a fresh one instead.
+        guard elapsed <= 2 * Self.infoInterval else { return }
+        fps = Int((Double(fpsWindowFrames) / elapsed).rounded())
+        if showInfo {
+            refreshInfo()
+        }
     }
 
     private func refreshInfo() {
         guard showInfo else {
-            info = nil
+            // @Published fires on every assignment, so skip a nil that changes nothing.
+            if info != nil {
+                info = nil
+            }
             return
         }
         let look = bridge.lookInfo()

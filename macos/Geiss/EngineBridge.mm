@@ -41,15 +41,13 @@
 
 @interface GeissLookInfo ()
 
-- (instancetype)initWithEngine:(const geiss::Engine &)engine
-                         audio:(const geiss::AudioFrame &)audio NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithEngine:(const geiss::Engine &)engine NS_DESIGNATED_INITIALIZER;
 
 @end
 
 @implementation GeissLookInfo
 
-- (instancetype)initWithEngine:(const geiss::Engine &)engine
-                         audio:(const geiss::AudioFrame &)audio {
+- (instancetype)initWithEngine:(const geiss::Engine &)engine {
     self = [super init];
     if (self != nil) {
         const geiss::EffectSet &set = engine.effects();
@@ -71,7 +69,7 @@
             [names addObject:name];
         }
         _effects = [names copy];
-        _resting = audio.silent || audio.samples.empty();
+        _resting = !engine.soundActive();
     }
     return self;
 }
@@ -129,7 +127,7 @@
 }
 
 - (GeissLookInfo *)lookInfo {
-    return [[GeissLookInfo alloc] initWithEngine:*engine_ audio:frame_];
+    return [[GeissLookInfo alloc] initWithEngine:*engine_];
 }
 
 - (const uint8_t *)tick:(double)dt width:(int *)width height:(int *)height {

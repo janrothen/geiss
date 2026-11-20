@@ -111,7 +111,11 @@ const char* effectName(Effect effect) {
     static constexpr std::array<const char*, kEffectCount> kNames = {
         "Chasers", "Bar", "Dots", "Solar", "Grid", "Nuclide", "Shade bobs",
     };
-    return kNames.at(static_cast<std::size_t>(effect));
+    const auto index = static_cast<std::size_t>(effect);
+    if (index >= kNames.size()) {
+        return "?";
+    }
+    return kNames.at(index);
 }
 
 int EffectSet::count() const {
