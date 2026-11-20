@@ -11,6 +11,7 @@ add_library(geiss_engine STATIC
     src/beat.cpp
     src/effects.cpp
     src/map.cpp
+    src/palette.cpp
     src/engine.cpp
 )
 target_include_directories(geiss_engine PUBLIC include)
