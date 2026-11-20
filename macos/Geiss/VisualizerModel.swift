@@ -33,6 +33,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import AppKit
+import QuartzCore
 import SwiftUI
 
 // What the debug info readout shows. Refreshed twice a second while it is visible.
@@ -77,18 +78,28 @@ final class VisualizerModel: ObservableObject {
 
     private let bridge = GeissBridge(seed: 1)
     private let tap = SystemAudioTap()
-    private var lastDate: Date?
+    /// Frame times are display-link target times, on the `CACurrentMediaTime` clock.
+    private var lastTime: CFTimeInterval?
     private var lastSequence: UInt64 = 0
-    private var lastCaptureDate: Date?
-    private var simWidth = 0
-    private var simHeight = 0
-    private var silenceBuffer: [Float] = []
+    private var lastCaptureTime: CFTimeInterval?
+    private var simSize: SimulationSize?
+    /// A new size waits here until the view has held it for `resizeSettleSeconds`.
+    private var pendingSize: SimulationSize?
+    private var pendingSince: CFTimeInterval = 0
+    /// Room for the longest tick, so silence never reallocates.
+    private var silenceBuffer = [Float](repeating: 0, count: VisualizerModel.maxSilenceFrames * 2)
     private var captureBuffer: [Float] = []
-    private var fpsWindowStart: Date?
+    private var fpsWindowStart: CFTimeInterval?
     private var fpsWindowFrames = 0
     private var fps = 0
 
     private static let infoInterval = 0.5
+    /// A live resize or a fullscreen animation changes the size every frame. Rebuilding the
+    /// simulation each time costs a map build and new textures, so a size applies once the view
+    /// has held it this long. Until then the presenter stretches the current picture.
+    private static let resizeSettleSeconds = 0.15
+    private static let maxDelta = 0.1
+    private static let maxSilenceFrames = Int(PreviewTone.sampleRate * maxDelta) + 1
 
     private static let sensitivityKey = "sensitivity"
 
@@ -152,16 +163,11 @@ final class VisualizerModel: ObservableObject {
         refreshInfo()
     }
 
-    func tick(to date: Date, viewSize: CGSize) {
-        let size = Self.simulationSize(for: viewSize)
-        if size.width != simWidth || size.height != simHeight {
-            simWidth = size.width
-            simHeight = size.height
-            bridge.resizeWidth(Int32(size.width), height: Int32(size.height))
-        }
+    /// `time` is when this frame will be shown, on the `CACurrentMediaTime` clock.
+    func tick(at time: CFTimeInterval, viewSize: CGSize) {
+        applySize(Self.simulationSize(for: viewSize), at: time)
 
-        let dt = cappedDelta(to: date)
-        let time = date.timeIntervalSinceReferenceDate
+        let dt = cappedDelta(to: time)
         switch preview {
         case .tone:
             let samples = PreviewTone.samples(endingAt: time)
@@ -182,22 +188,42 @@ final class VisualizerModel: ObservableObject {
 
         var width: Int32 = 0
         var height: Int32 = 0
-        let pixels = bridge.tick(dt, width: &width, height: &height)
-        presenter.upload(pixels: pixels, width: Int(width), height: Int(height))
-        countFrame(at: date)
+        var changed: ObjCBool = true
+        let pixels = bridge.tick(dt, width: &width, height: &height, changed: &changed)
+        presenter.present(pixels: pixels, width: Int(width), height: Int(height), changed: changed.boolValue)
+        countFrame(at: time)
+    }
+
+    private func applySize(_ size: SimulationSize, at time: CFTimeInterval) {
+        guard size != simSize else {
+            pendingSize = nil
+            return
+        }
+        // The first size applies at once, so the window opens on a sharp picture.
+        if simSize != nil {
+            if size != pendingSize {
+                pendingSize = size
+                pendingSince = time
+                return
+            }
+            guard time - pendingSince >= Self.resizeSettleSeconds else { return }
+        }
+        simSize = size
+        pendingSize = nil
+        bridge.resizeWidth(Int32(size.width), height: Int32(size.height))
     }
 
     // Counts real ticks rather than summing dt, which is capped.
-    private func countFrame(at date: Date) {
+    private func countFrame(at time: CFTimeInterval) {
         fpsWindowFrames += 1
         guard let start = fpsWindowStart else {
-            fpsWindowStart = date
+            fpsWindowStart = time
             fpsWindowFrames = 0
             return
         }
-        let elapsed = date.timeIntervalSince(start)
+        let elapsed = time - start
         guard elapsed >= Self.infoInterval else { return }
-        fpsWindowStart = date
+        fpsWindowStart = time
         defer { fpsWindowFrames = 0 }
         // The timeline stops while the window is hidden. A window spanning that gap
         // would read near zero, so start a fresh one instead.
@@ -258,12 +284,12 @@ final class VisualizerModel: ObservableObject {
         return look.resting ? "\(names) (resting)" : names
     }
 
-    static func simulationSize(for viewSize: CGSize) -> (width: Int, height: Int) {
+    static func simulationSize(for viewSize: CGSize) -> SimulationSize {
         let longest = max(viewSize.width, viewSize.height, 1)
         let scale = min(1, 960 / longest)
-        return (
-            max(2, Int((viewSize.width * scale).rounded())),
-            max(2, Int((viewSize.height * scale).rounded()))
+        return SimulationSize(
+            width: max(2, Int((viewSize.width * scale).rounded())),
+            height: max(2, Int((viewSize.height * scale).rounded()))
         )
     }
 
@@ -276,7 +302,7 @@ final class VisualizerModel: ObservableObject {
         }
         if running, let snap = tap.latest(into: &captureBuffer), snap.sequence != lastSequence {
             lastSequence = snap.sequence
-            lastCaptureDate = Date()
+            lastCaptureTime = time
             captureBuffer.withUnsafeBufferPointer { buffer in
                 bridge.ingestInterleaved(
                     buffer.baseAddress,
@@ -288,17 +314,14 @@ final class VisualizerModel: ObservableObject {
             }
             return
         }
-        let age = lastCaptureDate.map { Date().timeIntervalSince($0) } ?? 1
+        let age = lastCaptureTime.map { time - $0 } ?? 1
         if !running || age > 0.2 {
             ingestSilence(dt: dt, time: time)
         }
     }
 
     private func ingestSilence(dt: Double, time: Double) {
-        let frames = max(1, Int(PreviewTone.sampleRate * dt))
-        if silenceBuffer.count != frames * 2 {
-            silenceBuffer = [Float](repeating: 0, count: frames * 2)
-        }
+        let frames = min(max(1, Int(PreviewTone.sampleRate * dt)), Self.maxSilenceFrames)
         silenceBuffer.withUnsafeBufferPointer { buffer in
             bridge.ingestInterleaved(
                 buffer.baseAddress,
@@ -310,15 +333,20 @@ final class VisualizerModel: ObservableObject {
         }
     }
 
-    private func cappedDelta(to date: Date) -> Double {
-        defer { lastDate = date }
-        guard let lastDate else { return 1.0 / 60.0 }
-        let gap = date.timeIntervalSince(lastDate)
+    private func cappedDelta(to time: CFTimeInterval) -> Double {
+        defer { lastTime = time }
+        guard let lastTime else { return 1.0 / 60.0 }
+        let gap = time - lastTime
         if gap <= 0 || gap > 0.5 {
             return 1.0 / 60.0
         }
-        return min(gap, 0.1)
+        return min(gap, Self.maxDelta)
     }
+}
+
+struct SimulationSize: Equatable {
+    var width: Int
+    var height: Int
 }
 
 enum PreviewTone {

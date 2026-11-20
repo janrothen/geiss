@@ -237,6 +237,128 @@ void testEnginePauseDrawsALine() {
     check(same, "pause returns the same picture");
 }
 
+void testWrapColumn() {
+    // In range, the column is returned as is. Outside, it wraps by width - 1 like fmod did.
+    check(geiss::wrapColumn(0.f, 10) == 0.f, "column 0 stays");
+    check(geiss::wrapColumn(4.25f, 10) == 4.25f, "an in-range column stays");
+    checkNear(geiss::wrapColumn(9.f, 10), 0.f, 1e-6f, "the last column wraps to the first, as the original's FXW-1 step did");
+    checkNear(geiss::wrapColumn(11.5f, 10), 2.5f, 1e-5f, "a column past the right edge wraps");
+    checkNear(geiss::wrapColumn(-0.5f, 10), 8.5f, 1e-5f, "a column past the left edge wraps");
+    checkNear(geiss::wrapColumn(-20.f, 10), 7.f, 1e-5f, "a far-left column wraps more than once");
+    check(geiss::wrapColumn(3.f, 1) == 0.f, "a one-column frame has nowhere to go");
+    for (int step = -81; step < 81; ++step) {
+        const float value = static_cast<float>(step) * 0.37f;
+        float reference = std::fmod(value, 9.f);
+        if (reference < 0.f) {
+            reference += 9.f;
+        }
+        check(geiss::wrapColumn(value, 10) == reference, "wrapColumn matches the fmod wrap everywhere");
+    }
+}
+
+// Runs the bands last to first and counts the calls, so a result that depends on the
+// order, or a band that is skipped or run twice, shows up.
+struct ReverseBands {
+    std::vector<int> calls;
+
+    static void run(void* host, int count, void* job, geiss::BandRunner::Band band) {
+        auto& self = *static_cast<ReverseBands*>(host);
+        self.calls.assign(static_cast<std::size_t>(count), 0);
+        for (int index = count - 1; index >= 0; --index) {
+            ++self.calls[static_cast<std::size_t>(index)];
+            band(job, index);
+        }
+    }
+
+    geiss::BandRunner runner() { return geiss::BandRunner{&ReverseBands::run, this}; }
+
+    bool eachOnce() const {
+        return !calls.empty() && std::all_of(calls.begin(), calls.end(), [](int c) { return c == 1; });
+    }
+};
+
+void testBandsMatchSerial() {
+    check(geiss::bandCount(540) == 16, "a full frame splits into 16 bands");
+    check(geiss::bandCount(5) == 5, "a short frame has a band per row");
+    check(geiss::bandCount(0) == 1, "an empty frame still has one band");
+    check(geiss::bandFirstRow(0, 16, 540) == 0 && geiss::bandFirstRow(16, 16, 540) == 540, "the bands cover every row");
+
+    constexpr int width = 97;
+    constexpr int height = 61;
+    for (const int mode : {5, 6, 7, 12, 25}) {
+        geiss::Random random;
+        random.state = 11u + static_cast<std::uint32_t>(mode);
+        const geiss::MapParameters map = geiss::randomMapParameters(mode, width, height, random);
+        std::vector<geiss::SourcePoint> serial;
+        std::vector<geiss::SourcePoint> banded;
+        geiss::buildMap(serial, width, height, map);
+        ReverseBands bands;
+        geiss::buildMap(banded, width, height, map, bands.runner());
+        check(bands.eachOnce(), "buildMap runs each band once");
+        bool sameMap = serial.size() == banded.size();
+        for (std::size_t i = 0; sameMap && i < serial.size(); ++i) {
+            sameMap = serial[i].x == banded[i].x && serial[i].y == banded[i].y;
+        }
+        check(sameMap, "a banded map matches the serial map");
+
+        std::vector<std::uint8_t> src(static_cast<std::size_t>(width) * height);
+        for (std::size_t i = 0; i < src.size(); ++i) {
+            src[i] = static_cast<std::uint8_t>(i * 37u + 11u);
+        }
+        std::vector<std::uint8_t> serialOut(src.size());
+        std::vector<std::uint8_t> bandedOut(src.size());
+        geiss::warpIndices(src.data(), serialOut.data(), width, height, serial.data(), 0.5f, 0.97f, 1.5f, -0.5f, 9u);
+        geiss::warpIndices(src.data(), bandedOut.data(), width, height, serial.data(), 0.5f, 0.97f, 1.5f, -0.5f, 9u,
+                           bands.runner());
+        check(bands.eachOnce(), "warpIndices runs each band once");
+        check(serialOut == bandedOut, "a banded warp matches the serial warp");
+    }
+
+    // A whole engine gives the same pictures with a band runner as without one.
+    geiss::Engine plain(21);
+    geiss::Engine banded(21);
+    ReverseBands bands;
+    banded.setBandRunner(bands.runner());
+    plain.resize(80, 45);
+    banded.resize(80, 45);
+    geiss::AudioFrame audio;
+    audio.volume = 100.f;
+    audio.averageVolume = 100.f;
+    audio.samples.resize(80);
+    for (int i = 0; i < 80; ++i) {
+        audio.samples[static_cast<std::size_t>(i)] = std::sin(static_cast<float>(i) * 0.3f);
+    }
+    bool samePictures = true;
+    for (int frame = 0; frame < 40; ++frame) {
+        if (frame % 10 == 0) {
+            plain.nextVisual();
+            banded.nextVisual();
+        }
+        const geiss::FrameView a = plain.tick(1.0 / 60.0, audio);
+        const geiss::FrameView b = banded.tick(1.0 / 60.0, audio);
+        samePictures = samePictures && std::equal(a.rgba, a.rgba + static_cast<std::size_t>(a.width) * a.height * 4, b.rgba);
+    }
+    check(samePictures, "an engine with bands draws the same pictures");
+}
+
+void testFrameChanged() {
+    geiss::Engine engine(5);
+    engine.resize(32, 24);
+    geiss::AudioFrame audio;
+    check(engine.tick(1.0 / 60.0, audio).changed, "a moving tick changes the frame");
+    engine.setPaused(true);
+    check(!engine.tick(1.0 / 60.0, audio).changed, "a paused tick leaves the frame as it was");
+    engine.nextVisual();
+    check(!engine.tick(1.0 / 60.0, audio).changed, "next while paused waits for the picture to move");
+    engine.resize(40, 30);
+    check(engine.tick(1.0 / 60.0, audio).changed, "a resize while paused changes the frame once");
+    check(!engine.tick(1.0 / 60.0, audio).changed, "and only once");
+    engine.setPalette(engine.palette());
+    check(engine.tick(1.0 / 60.0, audio).changed, "a new palette while paused changes the frame");
+    engine.setPaused(false);
+    check(engine.tick(1.0 / 60.0, audio).changed, "resuming changes the frame again");
+}
+
 std::vector<float> stereoTone(double frequency, int frames, double sampleRate, float amplitude) {
     std::vector<float> out(static_cast<std::size_t>(frames) * 2);
     for (int i = 0; i < frames; ++i) {
@@ -1806,6 +1928,9 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testEngineEffects();
     testNames();
     testSoundActive();
+    testWrapColumn();
+    testBandsMatchSerial();
+    testFrameChanged();
     if (failures != 0) {
         std::cerr << failures << " failed\n";
         return EXIT_FAILURE;

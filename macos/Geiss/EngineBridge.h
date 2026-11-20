@@ -56,7 +56,8 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 // The SwiftUI shell sees only these Objective-C types. The pointer from tick is
-// valid until the next tick or resize.
+// valid until the next tick or resize. `changed` is NO when the pixels are the same as the
+// previous tick's, for example while paused, so the presenter can skip the upload.
 @interface GeissBridge : NSObject
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -73,7 +74,10 @@ NS_ASSUME_NONNULL_BEGIN
                 sampleRate:(double)sampleRate
                       time:(double)time;
 - (GeissLookInfo *)lookInfo;
-- (const uint8_t *)tick:(double)dt width:(int *)width height:(int *)height;
+- (const uint8_t *)tick:(double)dt
+                  width:(int *)width
+                 height:(int *)height
+                changed:(BOOL *)changed;
 
 @end
 

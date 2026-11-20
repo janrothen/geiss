@@ -104,13 +104,26 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         }
     }
 
-    func upload(pixels: UnsafePointer<UInt8>, width: Int, height: Int) {
+    /// Shows the engine's frame. An unchanged frame of the same size is drawn again from the
+    /// last texture without copying it, which is all a paused picture needs: the redraw keeps
+    /// the HDR gain and the screen's color space current.
+    func present(pixels: UnsafePointer<UInt8>, width: Int, height: Int, changed: Bool) {
         guard width > 0, height > 0 else { return }
+        if !changed, let texture, texture.width == width, texture.height == height {
+            view?.draw()
+            return
+        }
+        upload(pixels: pixels, width: width, height: height)
+    }
+
+    private func upload(pixels: UnsafePointer<UInt8>, width: Int, height: Int) {
         inFlight.wait()
         slotHeld = true
         if textures.first?.width != width || textures.first?.height != height {
+            // The sRGB format lets the texture unit decode the palette colors before it filters
+            // them, so the shader does not. Alpha, the highlight level, stays linear.
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .rgba8Unorm,
+                pixelFormat: .rgba8Unorm_srgb,
                 width: width,
                 height: height,
                 mipmapped: false
@@ -219,23 +232,20 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         return out;
     }
 
-    float3 toLinear(float3 c) {
-        return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
-    }
-
     // Levels from 80% to the top ease up to `gain` times SDR white.
     float boost(float level, float gain) {
         return 1.0 + (gain - 1.0) * smoothstep(0.8, 1.0, level);
     }
 
-    // RGB is the palette color, encoded like sRGB. Alpha is the highlight level: the palette
+    // RGB is the palette color, encoded like sRGB and decoded by the texture's sRGB format, so a
+    // sample is already linear. Alpha is the highlight level: the palette
     // index, capped by the color's brightness next to the palette's brightest. Fresh lines,
     // beat hits, and bright effects glow on an HDR screen while trails keep their SDR
     // brightness.
     fragment float4 geissFragment(Varying in [[stage_in]], texture2d<float> image [[texture(0)]],
                                   constant float& gain [[buffer(0)]]) {
         constexpr sampler linear(filter::linear, address::clamp_to_edge);
-        const float3 color = toLinear(image.sample(linear, in.uv).rgb);
+        const float3 color = image.sample(linear, in.uv).rgb;
         if (gain <= 1.0) {
             return float4(color, 1.0);
         }
@@ -255,9 +265,19 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
 }
 
 /// An MTKView that calls `onFrame` once per refresh of the screen it is on, up to that
-/// screen's highest rate (120 Hz on a ProMotion display).
+/// screen's highest rate (120 Hz on a ProMotion display), with the time the frame will be
+/// shown. Consecutive target times step by exactly the refresh interval, so motion stays even
+/// when a callback runs late. The time is on the `CACurrentMediaTime` clock.
 final class DisplayLinkedView: MTKView {
-    var onFrame: ((Date) -> Void)?
+    var onFrame: ((CFTimeInterval) -> Void)?
+    /// A paused picture does not move, so it asks for a low rate instead of the screen's top rate.
+    var lowRate = false {
+        didSet {
+            if lowRate != oldValue {
+                applyRate()
+            }
+        }
+    }
     private var link: CADisplayLink?
 
     override func viewDidMoveToWindow() {
@@ -267,39 +287,48 @@ final class DisplayLinkedView: MTKView {
         guard window != nil else { return }
         // The link follows the view to whichever screen shows it.
         let link = displayLink(target: self, selector: #selector(step))
-        let fastest = Float(window?.screen?.maximumFramesPerSecond ?? 60)
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: fastest, preferred: fastest)
         link.add(to: .main, forMode: .common)
         self.link = link
+        applyRate()
     }
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         // A move to a screen with another top rate asks for that rate.
-        if let link, let screen = window?.screen {
-            let fastest = Float(screen.maximumFramesPerSecond)
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: fastest, preferred: fastest)
+        applyRate()
+    }
+
+    private func applyRate() {
+        guard let link else { return }
+        if lowRate {
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 10, maximum: 20, preferred: 15)
+            return
         }
+        let fastest = Float(window?.screen?.maximumFramesPerSecond ?? 60)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: fastest, preferred: fastest)
     }
 
     @objc private func step(_ link: CADisplayLink) {
-        onFrame?(.now)
+        onFrame?(link.targetTimestamp)
     }
 }
 
 struct MetalScreen: NSViewRepresentable {
     let presenter: MetalPresenter
-    let onFrame: (Date) -> Void
+    let lowRate: Bool
+    let onFrame: (CFTimeInterval) -> Void
 
     func makeNSView(context: Context) -> DisplayLinkedView {
         let view = DisplayLinkedView()
         presenter.attach(view)
         view.onFrame = onFrame
+        view.lowRate = lowRate
         return view
     }
 
     func updateNSView(_ nsView: DisplayLinkedView, context: Context) {
         nsView.onFrame = onFrame
+        nsView.lowRate = lowRate
     }
 
     static func dismantleNSView(_ nsView: DisplayLinkedView, coordinator: ()) {
