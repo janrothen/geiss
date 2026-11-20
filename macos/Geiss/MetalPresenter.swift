@@ -52,8 +52,13 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     /// HDR highlights: the brightest palette levels rise above SDR white, up to this many
     /// times white or the screen's current headroom, whichever is lower.
     static let highlightCap: Float = 2.5
-    /// The screen's current extended dynamic range headroom. 1 on an SDR screen.
+    /// The screen's current extended dynamic range headroom. It can fall to 1 on an HDR
+    /// screen, for example at full brightness.
     private(set) var headroom: Float = 1
+    /// The most headroom the screen can offer. Above 1 only on an HDR screen.
+    private(set) var potentialHeadroom: Float = 1
+    /// Whether the drawable is tagged Display P3 (true) or sRGB (false), once a screen is known.
+    private var taggedP3: Bool?
     /// What the brightest level is drawn at, in multiples of SDR white.
     var highlightGain: Float { min(Self.highlightCap, max(1, headroom)) }
 
@@ -78,11 +83,9 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         self.view = view
         view.device = device
         view.delegate = self
-        // A float drawable in extended linear Display P3 can go brighter than SDR white.
-        // Display P3 matches the earlier unmanaged 8-bit output on the Mac's P3 screens.
+        // A float drawable in an extended linear color space can go brighter than SDR white.
         view.colorPixelFormat = .rgba16Float
-        view.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)
-        (view.layer as? CAMetalLayer)?.wantsExtendedDynamicRangeContent = true
+        matchScreen(view)
         view.framebufferOnly = true
         view.isPaused = true
         view.enableSetNeedsDisplay = false
@@ -145,8 +148,7 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         else {
             return
         }
-        // The headroom follows the screen and its brightness setting, so it is read every frame.
-        headroom = Float(view.window?.screen?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
+        matchScreen(view)
         var gain = highlightGain
         encoder.setRenderPipelineState(pipeline)
         encoder.setFragmentTexture(texture, index: 0)
@@ -163,6 +165,26 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         }
         buffer.present(drawable)
         buffer.commit()
+    }
+
+    /// Keeps EDR on and the drawable's color space and headroom in step with the view's screen.
+    /// Runs every frame: the layer may not exist when the view is attached, the window can move
+    /// to another screen, and the headroom follows the brightness setting.
+    private func matchScreen(_ view: MTKView) {
+        if let layer = view.layer as? CAMetalLayer, !layer.wantsExtendedDynamicRangeContent {
+            layer.wantsExtendedDynamicRangeContent = true
+        }
+        let screen = view.window?.screen
+        headroom = Float(screen?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
+        potentialHeadroom = Float(screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1)
+        // The palette was drawn for an unmanaged 8-bit screen. Tagging it with the screen's own
+        // gamut keeps those colors: Display P3 on a P3 screen, sRGB on any other.
+        let showsP3 = screen?.canRepresent(.p3) ?? false
+        guard showsP3 != taggedP3 || view.colorspace == nil else { return }
+        taggedP3 = showsP3
+        view.colorspace = CGColorSpace(
+            name: showsP3 ? CGColorSpace.extendedLinearDisplayP3 : CGColorSpace.extendedLinearSRGB
+        )
     }
 
     private static let shader = """
@@ -187,7 +209,8 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
     }
 
-    // RGB is the palette color, encoded like sRGB. Alpha is the palette index. Levels from
+    // RGB is the palette color, encoded like sRGB. Alpha is the highlight level: the palette
+    // index, capped by the color's brightness next to the palette's brightest. Levels from
     // 80% to the top ease up to `gain` times SDR white, so fresh lines, beat hits, and
     // bright effects glow on an HDR screen while trails keep their SDR brightness.
     fragment float4 geissFragment(Varying in [[stage_in]], texture2d<float> image [[texture(0)]],

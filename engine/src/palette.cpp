@@ -155,4 +155,36 @@ Palette blendPalettes(const Palette& from, const Palette& to, float t) {
     return out;
 }
 
+namespace {
+
+// Linear-light luminance of an sRGB-encoded entry, with Rec. 709 weights.
+float luminance(const Palette& palette, std::size_t index) {
+    const auto linear = [](std::uint8_t channel) {
+        const float c = static_cast<float>(channel) / 255.f;
+        return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    };
+    return 0.2126f * linear(palette[index * 3]) + 0.7152f * linear(palette[index * 3 + 1]) +
+           0.0722f * linear(palette[index * 3 + 2]);
+}
+
+}  // namespace
+
+HighlightLevels highlightLevels(const Palette& palette) {
+    std::array<float, 256> luma{};
+    float brightest = 0;
+    for (std::size_t n = 0; n < luma.size(); ++n) {
+        luma[n] = luminance(palette, n);
+        brightest = std::max(brightest, luma[n]);
+    }
+    HighlightLevels levels{};
+    if (brightest <= 0) {
+        return levels;
+    }
+    for (std::size_t n = 0; n < levels.size(); ++n) {
+        const float relative = std::round(luma[n] / brightest * 255.f);
+        levels[n] = static_cast<std::uint8_t>(std::min(static_cast<float>(n), relative));
+    }
+    return levels;
+}
+
 }  // namespace geiss

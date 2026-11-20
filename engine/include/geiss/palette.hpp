@@ -82,4 +82,12 @@ Palette buildPalette(const PaletteRecipe& recipe, bool soundEmpty);
 // `t` 0 is `from`, 1 is `to`. PutPalette blended linearly.
 Palette blendPalettes(const Palette& from, const Palette& to, float t);
 
+// One highlight level per palette index, for HDR highlights. A level is the index, capped by
+// the entry's luminance next to the palette's brightest entry, both on a 0...255 scale. So a
+// pixel glows only when it is fresh (a high index) and among the palette's brightest colors.
+// Bright bands in the middle of a palette are trails and stay at SDR, and dim colors at the
+// top of a rippling palette do not glow. A black palette has no highlights.
+using HighlightLevels = std::array<std::uint8_t, 256>;
+HighlightLevels highlightLevels(const Palette& palette);
+
 }  // namespace geiss
