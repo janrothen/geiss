@@ -431,7 +431,7 @@ void Engine::expandPalette(const std::uint8_t* indices) {
         rgba_[i * 4] = palette_[index];
         rgba_[i * 4 + 1] = palette_[index + 1];
         rgba_[i * 4 + 2] = palette_[index + 2];
-        rgba_[i * 4 + 3] = 255;
+        rgba_[i * 4 + 3] = indices[i];
     }
 }
 

@@ -62,6 +62,7 @@ Build a modernized Geiss visualizer for Apple Silicon Macs. Preserve the recogni
 ## Rendering
 
 - Preserve the existing visualization algorithms and their visual intent in portable C++ where practical.
+- HDR highlights (user decision): on a screen with extended dynamic range, such as the Pro Display XDR or Studio Display XDR, the brightest palette levels glow above SDR white. It is on by default and has no setting. The engine puts each pixel's palette index in the RGBA8 buffer's alpha. The presenter draws into a 16-bit float drawable in extended linear Display P3, decodes the palette colors as sRGB-encoded, and multiplies levels from 80% to the top by up to the highlight gain, eased in with a smoothstep. The gain is 2.5 times SDR white or the screen's current headroom, whichever is lower, read every frame because the headroom follows the brightness setting. Fresh waveforms, beat hits, and bright effects glow, while trails below 80% keep their SDR brightness. On an SDR screen the headroom is 1 and the picture is unchanged. Display P3 keeps the colors of the earlier unmanaged 8-bit output on the Mac's P3 screens. Whether 2.5 is the right cap is judged by eye.
 - In the first version, Metal uploads the RGBA8 buffer and scales it. A GPU warp can be considered later if CPU cost calls for it.
 - Each tick draws the look's effects into the previous index buffer, warps it through the current map, darkens it, draws the waveform, and then expands the palette to RGBA8.
 - Palettes port the original's generator (`video.h`: `FX_Random_Palette`, `CrankPal`, `PutPalette`) in `engine/src/palette.cpp`, at the original's default settings: gamma 10, coarse frequency 1, and solar frequency 1. None of these is a control.
@@ -85,7 +86,7 @@ Build a modernized Geiss visualizer for Apple Silicon Macs. Preserve the recogni
   - **Pause.** Freezes the picture. This state does not persist.
   - **Lock.** Keeps audio motion and holds the current map, waveform, and palette. This state does not persist.
   - **Next visual.**
-- **Info readout (debug aid, user decision).** I, or Visual > Show Info, toggles a small readout in the top-left corner: frames per second (counted from real ticks, refreshed twice a second), the map number and name, the waveform number and name, and the look's effects, marked as resting in silence. Names follow [the glossary](../glossary.md). It starts hidden, is not persisted, and is not a visualizer control.
+- **Info readout (debug aid, user decision).** I, or Visual > Show Info, toggles a small readout in the top-left corner: frames per second (counted from real ticks, refreshed twice a second), the map number and name, the waveform number and name, and the look's effects, marked as resting in silence, and the HDR highlight gain with the screen's current headroom, or off on an SDR screen. Names follow [the glossary](../glossary.md). It starts hidden, is not persisted, and is not a visualizer control.
 - The picture is full-bleed. Vertical size, letterboxing, beat response, palette controls, variation pace, and horizontal shift stay internal until a later version asks for them.
 
 ## When audio permission is missing

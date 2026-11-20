@@ -124,6 +124,7 @@ struct VisualizerView: View {
             infoRow("MAP", info.map)
             infoRow("WAVE", info.wave)
             infoRow("FX", info.effects)
+            infoRow("HDR", info.hdr)
         }
         .font(.system(size: 12, weight: .medium, design: .monospaced))
         .foregroundStyle(.white.opacity(0.88))

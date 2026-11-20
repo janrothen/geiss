@@ -873,6 +873,28 @@ void testFadeMatchesAtAnyFrameRate() {
     check(geiss::ditherThreshold(3, 4, 1) != geiss::ditherThreshold(3, 4, 2), "the rounding pattern changes with the seed");
 }
 
+void testAlphaCarriesTheLevel() {
+    geiss::Engine engine(1);
+    engine.resize(32, 24);
+    engine.setEffects({});
+    geiss::PaletteRecipe plain;
+    plain.curves = {2, 2, 2};
+    engine.setPalette(plain);
+    engine.setSlideShiftAllowed(false);
+    const geiss::FrameView frame = engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    int brightest = 0;
+    bool matches = true;
+    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        const int level = frame.rgba[i * 4 + 3];
+        brightest = std::max(brightest, level);
+        // The x * 2 * 1.1 curve: red follows the level until it clamps.
+        matches = matches && frame.rgba[i * 4] == std::min(255, static_cast<int>(static_cast<float>(level) * 2.f * 1.1f));
+    }
+    check(brightest == 255, "a full-brightness line carries level 255 in alpha");
+    check(matches, "alpha is the palette index each color came from");
+}
+
 void testBassAverage() {
     geiss::BeatDetector detector;
     geiss::BeatState state;
@@ -1693,6 +1715,7 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testPeakRelaxes();
     testWarpShift();
     testBassAverage();
+    testAlphaCarriesTheLevel();
     testFadeMatchesAtAnyFrameRate();
     testSilenceFadesAtAnyFrameRate();
     testEngineSlideShift();

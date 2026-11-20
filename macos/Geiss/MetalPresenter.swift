@@ -49,6 +49,13 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     /// True between an upload's wait and the draw that releases that slot.
     private var slotHeld = false
     private weak var view: MTKView?
+    /// HDR highlights: the brightest palette levels rise above SDR white, up to this many
+    /// times white or the screen's current headroom, whichever is lower.
+    static let highlightCap: Float = 2.5
+    /// The screen's current extended dynamic range headroom. 1 on an SDR screen.
+    private(set) var headroom: Float = 1
+    /// What the brightest level is drawn at, in multiples of SDR white.
+    var highlightGain: Float { min(Self.highlightCap, max(1, headroom)) }
 
     override init() {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -62,7 +69,7 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = library.makeFunction(name: "geissVertex")
         descriptor.fragmentFunction = library.makeFunction(name: "geissFragment")
-        descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        descriptor.colorAttachments[0].pixelFormat = .rgba16Float
         pipeline = try! device.makeRenderPipelineState(descriptor: descriptor)
         super.init()
     }
@@ -71,7 +78,11 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         self.view = view
         view.device = device
         view.delegate = self
-        view.colorPixelFormat = .bgra8Unorm
+        // A float drawable in extended linear Display P3 can go brighter than SDR white.
+        // Display P3 matches the earlier unmanaged 8-bit output on the Mac's P3 screens.
+        view.colorPixelFormat = .rgba16Float
+        view.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)
+        (view.layer as? CAMetalLayer)?.wantsExtendedDynamicRangeContent = true
         view.framebufferOnly = true
         view.isPaused = true
         view.enableSetNeedsDisplay = false
@@ -134,8 +145,12 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         else {
             return
         }
+        // The headroom follows the screen and its brightness setting, so it is read every frame.
+        headroom = Float(view.window?.screen?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
+        var gain = highlightGain
         encoder.setRenderPipelineState(pipeline)
         encoder.setFragmentTexture(texture, index: 0)
+        encoder.setFragmentBytes(&gain, length: MemoryLayout<Float>.size, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
         if slotHeld {
@@ -168,9 +183,19 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         return out;
     }
 
-    fragment float4 geissFragment(Varying in [[stage_in]], texture2d<float> image [[texture(0)]]) {
+    float3 toLinear(float3 c) {
+        return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
+    }
+
+    // RGB is the palette color, encoded like sRGB. Alpha is the palette index. Levels from
+    // 80% to the top ease up to `gain` times SDR white, so fresh lines, beat hits, and
+    // bright effects glow on an HDR screen while trails keep their SDR brightness.
+    fragment float4 geissFragment(Varying in [[stage_in]], texture2d<float> image [[texture(0)]],
+                                  constant float& gain [[buffer(0)]]) {
         constexpr sampler linear(filter::linear, address::clamp_to_edge);
-        return image.sample(linear, in.uv);
+        const float4 texel = image.sample(linear, in.uv);
+        const float highlight = smoothstep(0.8, 1.0, texel.a);
+        return float4(toLinear(texel.rgb) * (1.0 + (gain - 1.0) * highlight), 1.0);
     }
     """
 }

@@ -41,6 +41,7 @@ struct InfoSnapshot: Equatable {
     var map: String
     var wave: String
     var effects: String
+    var hdr: String
 }
 
 enum PreviewSource: String {
@@ -224,11 +225,17 @@ final class VisualizerModel: ObservableObject {
             fps: fps,
             map: "\(look.mapMode) \(look.mapName)",
             wave: wave,
-            effects: Self.effectsLine(look)
+            effects: Self.effectsLine(look),
+            hdr: Self.hdrLine(gain: presenter.highlightGain, headroom: presenter.headroom)
         )
         if snapshot != info {
             info = snapshot
         }
+    }
+
+    private static func hdrLine(gain: Float, headroom: Float) -> String {
+        guard headroom > 1 else { return "off (SDR screen)" }
+        return String(format: "highlights %.1f× (headroom %.1f×)", gain, headroom)
     }
 
     private static func effectsLine(_ look: GeissLookInfo) -> String {
