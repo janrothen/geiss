@@ -874,6 +874,25 @@ void testFadeMatchesAtAnyFrameRate() {
     check(geiss::ditherThreshold(3, 4, 1) != geiss::ditherThreshold(3, 4, 2), "the rounding pattern changes with the seed");
 }
 
+// Whether every pixel's color and alpha come from one entry of the drawn palette and its level.
+bool alphaMatchesPalette(const geiss::Engine& engine, const geiss::FrameView& frame, int& brightest) {
+    const geiss::Palette& palette = engine.paletteColors();
+    const geiss::HighlightLevels levels = geiss::highlightLevels(palette);
+    std::set<std::array<int, 4>> entries;
+    for (std::size_t n = 0; n < levels.size(); ++n) {
+        entries.insert({palette[n * 3], palette[n * 3 + 1], palette[n * 3 + 2], levels[n]});
+    }
+    brightest = 0;
+    bool matches = true;
+    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        const std::uint8_t* pixel = frame.rgba + i * 4;
+        brightest = std::max(brightest, static_cast<int>(pixel[3]));
+        matches = matches && entries.contains({pixel[0], pixel[1], pixel[2], pixel[3]});
+    }
+    return matches;
+}
+
 void testAlphaCarriesTheLevel() {
     geiss::Engine engine(1);
     engine.resize(32, 24);
@@ -883,23 +902,32 @@ void testAlphaCarriesTheLevel() {
     engine.setPalette(plain);
     engine.setSlideShiftAllowed(false);
     const geiss::FrameView frame = engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
-    // Every pixel's color and alpha come from one palette entry and its highlight level.
-    const geiss::Palette& palette = engine.paletteColors();
-    const geiss::HighlightLevels levels = geiss::highlightLevels(palette);
-    std::set<std::array<int, 4>> entries;
-    for (std::size_t n = 0; n < levels.size(); ++n) {
-        entries.insert({palette[n * 3], palette[n * 3 + 1], palette[n * 3 + 2], levels[n]});
-    }
     int brightest = 0;
-    bool matches = true;
-    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
-    for (std::size_t i = 0; i < pixels; ++i) {
-        const std::uint8_t* pixel = frame.rgba + i * 4;
-        brightest = std::max(brightest, static_cast<int>(pixel[3]));
-        matches = matches && entries.contains({pixel[0], pixel[1], pixel[2], pixel[3]});
-    }
+    const bool matches = alphaMatchesPalette(engine, frame, brightest);
     check(brightest == 255, "a full-brightness line carries level 255 in alpha");
     check(matches, "alpha is the highlight level of the entry each color came from");
+}
+
+void testAlphaFollowsTheBlend() {
+    geiss::Engine engine(1);
+    engine.resize(32, 24);
+    geiss::PaletteRecipe plain;
+    plain.curves = {2, 2, 2};
+    engine.setPalette(plain);
+    engine.setSlideShiftAllowed(false);
+    engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    const geiss::Palette before = engine.paletteColors();
+    engine.nextVisual();
+    // A third of the way into the 0.3 s blend.
+    const geiss::FrameView middle = engine.tick(0.1, beatFrame(false, 1.f, 0.f));
+    const geiss::Palette blended = engine.paletteColors();
+    int brightest = 0;
+    check(blended != before, "the palette is mid-blend");
+    check(alphaMatchesPalette(engine, middle, brightest), "alpha follows the palette while it blends");
+    engine.tick(0.1, beatFrame(false, 1.f, 0.f));
+    const geiss::FrameView done = engine.tick(0.2, beatFrame(false, 1.f, 0.f));
+    check(engine.paletteColors() != blended, "the blend moves on");
+    check(alphaMatchesPalette(engine, done, brightest), "alpha follows the palette once the blend ends");
 }
 
 void testHighlightLevels() {
@@ -1747,6 +1775,7 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testWarpShift();
     testBassAverage();
     testAlphaCarriesTheLevel();
+    testAlphaFollowsTheBlend();
     testHighlightLevels();
     testFadeMatchesAtAnyFrameRate();
     testSilenceFadesAtAnyFrameRate();

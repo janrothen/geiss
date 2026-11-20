@@ -52,15 +52,24 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     /// HDR highlights: the brightest palette levels rise above SDR white, up to this many
     /// times white or the screen's current headroom, whichever is lower.
     static let highlightCap: Float = 2.5
+    /// Whether the screen's view is drawn with highlights. True only on an HDR screen.
+    private(set) var highlightsOn = false
     /// The screen's current extended dynamic range headroom. It can fall to 1 on an HDR
     /// screen, for example at full brightness.
     private(set) var headroom: Float = 1
     /// The most headroom the screen can offer. Above 1 only on an HDR screen.
     private(set) var potentialHeadroom: Float = 1
-    /// Whether the drawable is tagged Display P3 (true) or sRGB (false), once a screen is known.
-    private var taggedP3: Bool?
+    /// The screen color space the drawable was last tagged for, once a screen is known.
+    private var taggedScreenSpace: CGColorSpace?
     /// What the brightest level is drawn at, in multiples of SDR white.
-    var highlightGain: Float { min(Self.highlightCap, max(1, headroom)) }
+    var highlightGain: Float { highlightsOn ? min(Self.highlightCap, max(1, headroom)) : 1 }
+
+    /// A screen counts as HDR when it can reach the full highlight gain. Many SDR Mac screens
+    /// also offer some headroom below full brightness by raising the backlight. Asking for EDR
+    /// there would dim everything else on the screen and cost power for a faint glow.
+    static func isHDR(potentialHeadroom: Float) -> Bool {
+        potentialHeadroom >= highlightCap
+    }
 
     override init() {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -167,24 +176,29 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         buffer.commit()
     }
 
-    /// Keeps EDR on and the drawable's color space and headroom in step with the view's screen.
+    /// Keeps EDR, the drawable's color space, and the headroom in step with the view's screen.
     /// Runs every frame: the layer may not exist when the view is attached, the window can move
     /// to another screen, and the headroom follows the brightness setting.
     private func matchScreen(_ view: MTKView) {
-        if let layer = view.layer as? CAMetalLayer, !layer.wantsExtendedDynamicRangeContent {
-            layer.wantsExtendedDynamicRangeContent = true
-        }
         let screen = view.window?.screen
-        headroom = Float(screen?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
         potentialHeadroom = Float(screen?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1)
-        // The palette was drawn for an unmanaged 8-bit screen. Tagging it with the screen's own
-        // gamut keeps those colors: Display P3 on a P3 screen, sRGB on any other.
-        let showsP3 = screen?.canRepresent(.p3) ?? false
-        guard showsP3 != taggedP3 || view.colorspace == nil else { return }
-        taggedP3 = showsP3
-        view.colorspace = CGColorSpace(
-            name: showsP3 ? CGColorSpace.extendedLinearDisplayP3 : CGColorSpace.extendedLinearSRGB
-        )
+        highlightsOn = Self.isHDR(potentialHeadroom: potentialHeadroom)
+        if let layer = view.layer as? CAMetalLayer, layer.wantsExtendedDynamicRangeContent != highlightsOn {
+            layer.wantsExtendedDynamicRangeContent = highlightsOn
+        }
+        headroom = Float(screen?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
+        // The palette was drawn for an unmanaged 8-bit screen, which showed its values in the
+        // screen's own color space. Tagging the drawable with a linear copy of that space keeps
+        // those colors on any screen. A screen whose profile has no linear form falls back to
+        // Display P3 or sRGB, whichever it can show.
+        let screenSpace = screen?.colorSpace?.cgColorSpace
+        guard screenSpace != taggedScreenSpace || view.colorspace == nil else { return }
+        taggedScreenSpace = screenSpace
+        let fallback = (screen?.canRepresent(.p3) ?? false)
+            ? CGColorSpace.extendedLinearDisplayP3
+            : CGColorSpace.extendedLinearSRGB
+        view.colorspace = screenSpace.flatMap { CGColorSpaceCreateExtendedLinearized($0) }
+            ?? CGColorSpace(name: fallback)
     }
 
     private static let shader = """
@@ -209,16 +223,33 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
     }
 
+    // Levels from 80% to the top ease up to `gain` times SDR white.
+    float boost(float level, float gain) {
+        return 1.0 + (gain - 1.0) * smoothstep(0.8, 1.0, level);
+    }
+
     // RGB is the palette color, encoded like sRGB. Alpha is the highlight level: the palette
-    // index, capped by the color's brightness next to the palette's brightest. Levels from
-    // 80% to the top ease up to `gain` times SDR white, so fresh lines, beat hits, and
-    // bright effects glow on an HDR screen while trails keep their SDR brightness.
+    // index, capped by the color's brightness next to the palette's brightest. Fresh lines,
+    // beat hits, and bright effects glow on an HDR screen while trails keep their SDR
+    // brightness.
     fragment float4 geissFragment(Varying in [[stage_in]], texture2d<float> image [[texture(0)]],
                                   constant float& gain [[buffer(0)]]) {
         constexpr sampler linear(filter::linear, address::clamp_to_edge);
-        const float4 texel = image.sample(linear, in.uv);
-        const float highlight = smoothstep(0.8, 1.0, texel.a);
-        return float4(toLinear(texel.rgb) * (1.0 + (gain - 1.0) * highlight), 1.0);
+        const float3 color = toLinear(image.sample(linear, in.uv).rgb);
+        if (gain <= 1.0) {
+            return float4(color, 1.0);
+        }
+        // Each of the four texels the sampler blended gets its own boost, and the boosts are
+        // blended the same way. Easing a blended level instead would light only the middle of
+        // a magnified line, with a hard edge where the blend crosses 80%.
+        const float2 p = in.uv * float2(image.get_width(), image.get_height()) - 0.5;
+        const float2 f = fract(p);
+        const int2 last = int2(image.get_width(), image.get_height()) - 1;
+        const uint2 a = uint2(clamp(int2(floor(p)), int2(0), last));
+        const uint2 b = uint2(clamp(int2(floor(p)) + 1, int2(0), last));
+        const float top = mix(boost(image.read(a).a, gain), boost(image.read(uint2(b.x, a.y)).a, gain), f.x);
+        const float bottom = mix(boost(image.read(uint2(a.x, b.y)).a, gain), boost(image.read(b).a, gain), f.x);
+        return float4(color * mix(top, bottom, f.y), 1.0);
     }
     """
 }

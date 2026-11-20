@@ -134,6 +134,9 @@ private:
     Palette targetPalette_{};
     // Seconds left in the blend from `fromPalette_` to `targetPalette_`.
     double paletteBlendLeft_ = 0;
+    // The highlight levels of `levelsPalette_`, rebuilt only when the drawn palette changes.
+    Palette levelsPalette_{};
+    HighlightLevels levels_{};
     MapParameters mapParameters_{};
     Random random_;
     EffectSet effects_{};

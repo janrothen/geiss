@@ -426,8 +426,13 @@ void Engine::rebuildMap() {
 
 void Engine::expandPalette(const std::uint8_t* indices) {
     const std::size_t count = static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
-    // From the palette as drawn, so the levels follow a blend.
-    const HighlightLevels levels = highlightLevels(palette_);
+    // From the palette as drawn, so the levels follow a blend. The palette only changes while
+    // it blends or on a new pick, so the levels are rebuilt then and reused otherwise.
+    if (palette_ != levelsPalette_) {
+        levelsPalette_ = palette_;
+        levels_ = highlightLevels(palette_);
+    }
+    const HighlightLevels& levels = levels_;
     for (std::size_t i = 0; i < count; ++i) {
         const std::size_t index = static_cast<std::size_t>(indices[i]) * 3;
         rgba_[i * 4] = palette_[index];
