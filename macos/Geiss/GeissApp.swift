@@ -72,6 +72,7 @@ struct GeissApp: App {
                 Button("System Audio") {
                     model.preview = .system
                 }
+                .keyboardShortcut("0", modifiers: [.command])
                 Button("Tone") {
                     model.preview = .tone
                 }

@@ -48,6 +48,7 @@ constexpr float kVolumeScale = 128.f;
 // avg_vol = avg_vol*0.85 + vol*0.15 per frame at 30 fps.
 constexpr double kAverageVolumeRetain = 0.85;
 constexpr double kVolumeWindowSeconds = 1.0 / 30.0;
+constexpr double kOriginalSampleRate = 44100.0;
 
 float downmix(const float* frame, int channels) {
     if (channels <= 1) {
@@ -71,54 +72,51 @@ std::vector<float> channel(const PcmBlock& block, int which, float gain) {
     return out;
 }
 
-void resample(const std::vector<float>& source, std::vector<float>& dest) {
+// Resamples source[first, first + count) onto dest's columns.
+void resample(const std::vector<float>& source, std::size_t first, std::size_t count, std::vector<float>& dest) {
     const int columns = static_cast<int>(dest.size());
-    if (source.empty() || columns < 1) {
+    if (count == 0 || first + count > source.size() || columns < 1) {
         return;
     }
-    if (columns == 1 || source.size() == 1) {
-        const float value = source.size() == 1 ? source[0] : source[source.size() / 2];
-        std::fill(dest.begin(), dest.end(), value);
+    if (columns == 1 || count == 1) {
+        std::fill(dest.begin(), dest.end(), source[first + count / 2]);
         return;
     }
-    const float span = static_cast<float>(source.size() - 1);
+    const float span = static_cast<float>(count - 1);
     const float denom = static_cast<float>(columns - 1);
     for (int i = 0; i < columns; ++i) {
         const float pos = span * (static_cast<float>(i) / denom);
-        const int i0 = static_cast<int>(pos);
-        const int i1 = std::min(i0 + 1, static_cast<int>(source.size()) - 1);
+        const auto i0 = static_cast<std::size_t>(pos);
+        const std::size_t i1 = std::min(i0 + 1, count - 1);
         const float fraction = pos - static_cast<float>(i0);
-        const float a = source[static_cast<std::size_t>(i0)];
-        const float b = source[static_cast<std::size_t>(i1)];
+        const float a = source[first + i0];
+        const float b = source[first + i1];
         dest[static_cast<std::size_t>(i)] = a * (1.f - fraction) + b * fraction;
     }
 }
 
-// Rotate so the first rising zero crossing sits at column 0.
-// Intentional difference from GetWaveData: one rising edge, no slope match across frames.
-// Left and right take the same rotation so a stereo pair stays together.
-int risingColumn(const std::vector<float>& samples) {
-    const int n = static_cast<int>(samples.size());
-    if (n < 2) {
-        return 0;
-    }
-    for (int i = 0; i < n; ++i) {
-        const float a = samples[static_cast<std::size_t>(i)];
-        const float b = samples[static_cast<std::size_t>((i + 1) % n)];
-        if (a <= 0.f && b > 0.f) {
-            const int rising = i + 1;
-            return rising >= n ? 0 : rising;
-        }
-    }
-    return 0;
+// The original read one stereo frame for every two columns at 44.1 kHz, so the line spans
+// columns / 88200 seconds of sound however long the captured block is.
+std::size_t waveWindowFrames(int columns, double sampleRate, std::size_t available) {
+    const double frames = sampleRate > 0
+        ? std::round(static_cast<double>(columns) * sampleRate / (2.0 * kOriginalSampleRate))
+        : static_cast<double>(available);
+    return std::clamp(static_cast<std::size_t>(std::max(frames, 2.0)), std::size_t{1}, available);
 }
 
-void rotateFrom(std::vector<float>& samples, int rising) {
-    const int n = static_cast<int>(samples.size());
-    if (rising <= 0 || rising >= n) {
-        return;
+// Where the drawn window starts. The newest rising zero crossing that still leaves a whole
+// window after it, searched back up to one window from the newest start, so the line holds
+// in place. Without one, the window is the newest audio.
+// Intentional difference from GetWaveData: a rising edge, no height or slope match across frames.
+std::size_t waveWindowStart(const std::vector<float>& mono, std::size_t window) {
+    const std::size_t newest = mono.size() - window;
+    const std::size_t oldest = newest > window ? newest - window : 0;
+    for (std::size_t start = newest; start > oldest; --start) {
+        if (mono[start - 1] <= 0.f && mono[start] > 0.f) {
+            return start;
+        }
     }
-    std::rotate(samples.begin(), samples.begin() + rising, samples.end());
+    return newest;
 }
 
 // Peak-to-peak of the mono samples over the newest 1/30 s, on the original's volume scale.
@@ -202,13 +200,11 @@ AudioFrame Analyzer::analyze(const PcmBlock& block, int columns, float gain) {
     frame.left.assign(static_cast<std::size_t>(columns), 0.f);
     frame.right.assign(static_cast<std::size_t>(columns), 0.f);
     if (!mono.empty()) {
-        resample(mono, frame.samples);
-        resample(left, frame.left);
-        resample(right, frame.right);
-        const int rising = risingColumn(frame.samples);
-        rotateFrom(frame.samples, rising);
-        rotateFrom(frame.left, rising);
-        rotateFrom(frame.right, rising);
+        const std::size_t window = waveWindowFrames(columns, block.sampleRate, mono.size());
+        const std::size_t first = waveWindowStart(mono, window);
+        resample(mono, first, window, frame.samples);
+        resample(left, first, window, frame.left);
+        resample(right, first, window, frame.right);
     }
 
     if (frame.level < kSilenceLevel) {

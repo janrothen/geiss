@@ -163,7 +163,7 @@ final class VisualizerModel: ObservableObject {
         let time = date.timeIntervalSinceReferenceDate
         switch preview {
         case .tone:
-            let samples = PreviewTone.samples(at: time, duration: dt)
+            let samples = PreviewTone.samples(endingAt: time)
             samples.withUnsafeBufferPointer { buffer in
                 bridge.ingestInterleaved(
                     buffer.baseAddress,
@@ -301,13 +301,16 @@ final class VisualizerModel: ObservableObject {
 
 enum PreviewTone {
     static let sampleRate = 48_000.0
+    // As many frames as the capture ring holds, so the tone reaches the analyzer the way
+    // system audio does, whatever the frame rate.
+    static let frames = 2048
 
-    static func samples(at time: Double, duration: Double) -> [Float] {
-        let frames = max(1, Int(sampleRate * duration))
+    static func samples(endingAt time: Double) -> [Float] {
         var samples = [Float](repeating: 0, count: frames * 2)
         let frequency = 220.0
+        let start = time - Double(frames) / sampleRate
         for index in 0..<frames {
-            let sampleTime = time + Double(index) / sampleRate
+            let sampleTime = start + Double(index + 1) / sampleRate
             let value = Float(sin(sampleTime * frequency * 2 * .pi) * 0.65)
             samples[index * 2] = value
             samples[index * 2 + 1] = value

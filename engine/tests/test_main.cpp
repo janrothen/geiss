@@ -133,16 +133,6 @@ void testAnalysis() {
     check(!gained.silent, "a loud block is not silence");
     check(!gained.beatMode, "one block is not a beat");
 
-    const float wave[] = {-0.5f, -0.2f, 0.1f, 0.4f};
-    block.samples = wave;
-    block.frameCount = 4;
-    block.sampleRate = 4;
-    geiss::Analyzer aligned;
-    const geiss::AudioFrame edge = aligned.analyze(block, 4, 1.f);
-    checkNear(edge.samples[0], 0.1f, 0.0001f, "rising edge moves to column 0");
-    checkNear(edge.samples[1], 0.4f, 0.0001f, "samples after the edge keep their order");
-    checkNear(edge.samples[2], -0.5f, 0.0001f, "samples before the edge wrap to the end");
-
     const float quiet[] = {0.f};
     block.samples = quiet;
     block.frameCount = 1;
@@ -152,6 +142,60 @@ void testAnalysis() {
     check(!early.silent, "a quarter second of silence is not the hold yet");
     const geiss::AudioFrame later = silence.analyze(block, 2, 1.f);
     check(later.silent, "silence holds for half a second");
+}
+
+std::vector<float> sineBlock(int frames, double sampleRate, double frequency, double phase) {
+    std::vector<float> samples(static_cast<std::size_t>(frames) * 2);
+    for (int i = 0; i < frames; ++i) {
+        const auto value = static_cast<float>(0.5 * std::sin(phase + 2.0 * std::numbers::pi * frequency * i / sampleRate));
+        samples[static_cast<std::size_t>(i) * 2] = value;
+        samples[static_cast<std::size_t>(i) * 2 + 1] = value;
+    }
+    return samples;
+}
+
+geiss::AudioFrame analyzeSine(int frames, double phase, int columns) {
+    const std::vector<float> samples = sineBlock(frames, 48000.0, 220.0, phase);
+    geiss::PcmBlock block;
+    block.samples = samples.data();
+    block.frameCount = frames;
+    block.channels = 2;
+    block.sampleRate = 48000.0;
+    geiss::Analyzer analyzer;
+    return analyzer.analyze(block, columns, 1.f);
+}
+
+int risingCrossings(const std::vector<float>& columns) {
+    int count = 0;
+    for (std::size_t i = 1; i < columns.size(); ++i) {
+        if (columns[i - 1] <= 0.f && columns[i] > 0.f) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+void testWaveWindow() {
+    // 960 columns span 960 / 88200 s, about 10.9 ms, so a 220 Hz tone shows about 2.4 cycles.
+    const geiss::AudioFrame ring = analyzeSine(2048, 0.0, 960);
+    const geiss::AudioFrame frame = analyzeSine(800, 0.0, 960);
+    check(risingCrossings(ring.samples) == 2, "a 220 Hz tone shows about two cycles");
+    check(risingCrossings(frame.samples) == risingCrossings(ring.samples), "block length does not change the span");
+    check(ring.samples.front() >= -0.01f && ring.samples.front() < 0.05f && ring.samples[1] > ring.samples.front(),
+          "the window starts at a rising edge");
+
+    // A later block that ends mid-cycle draws the same line.
+    const geiss::AudioFrame later = analyzeSine(2048, 1.3, 960);
+    float worst = 0.f;
+    for (std::size_t i = 0; i < ring.samples.size(); ++i) {
+        worst = std::max(worst, std::fabs(later.samples[i] - ring.samples[i]));
+    }
+    check(worst < 0.05f, "the trigger holds the line in place");
+    check(later.left == later.samples && later.right == later.samples, "left and right share the window");
+
+    // A block shorter than the window spans all of it.
+    const geiss::AudioFrame tiny = analyzeSine(100, 0.0, 960);
+    check(tiny.samples.size() == 960, "a short block still fills every column");
 }
 
 void testEnginePauseDrawsALine() {
@@ -1191,6 +1235,7 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testMode25PullsTowardCenter();
     testWarpDecayAndSample();
     testAnalysis();
+    testWaveWindow();
     testEnginePauseDrawsALine();
     testBassLevel();
     testBeatDetector();
