@@ -45,6 +45,9 @@ namespace geiss {
 constexpr int kFirstWaveform = 1;
 constexpr int kLastWaveform = 6;
 
+// A short name for the waveform, from the spec's list, or "?" for an unknown number.
+const char* waveformName(int waveform);
+
 // One map mode and one waveform.
 struct Look {
     int mode = 25;
@@ -80,6 +83,8 @@ public:
     const MapParameters& map() const { return mapParameters_; }
     int waveform() const { return waveform_; }
     const EffectSet& effects() const { return effects_; }
+    // Whether the latest unpaused tick had sound. The effects rest while it is false.
+    bool soundActive() const { return soundActive_; }
     int width() const { return width_; }
 
     // Replaces the current look's effects, and rebuilds the map when mode 5 depends on
