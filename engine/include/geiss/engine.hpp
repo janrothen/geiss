@@ -38,6 +38,7 @@
 #include "geiss/effects.hpp"
 #include "geiss/map.hpp"
 #include "geiss/palette.hpp"
+#include "geiss/shift.hpp"
 
 #include <cstdint>
 
@@ -84,6 +85,10 @@ public:
     const MapParameters& map() const { return mapParameters_; }
     int waveform() const { return waveform_; }
     const EffectSet& effects() const { return effects_; }
+    // The look's slide shift and its current drift.
+    const SlideShift& slideShift() const { return slideShift_; }
+    // Allows or stops the slide shift for the current look. Each new look rolls it again.
+    void setSlideShiftAllowed(bool allowed) { slideShift_.startLook(allowed); }
     // Whether the latest unpaused tick had sound. The effects rest while it is false.
     bool soundActive() const { return soundActive_; }
     int width() const { return width_; }
@@ -131,6 +136,7 @@ private:
     Random random_;
     EffectSet effects_{};
     EffectLayer effectLayer_;
+    SlideShift slideShift_;
     // Whether the latest audio had sound. Effects for a new look are picked with it.
     bool soundActive_ = false;
     // Seconds of unbroken silence. A palette picked after a long silence is brighter.

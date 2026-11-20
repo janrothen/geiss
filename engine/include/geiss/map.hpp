@@ -140,8 +140,10 @@ void buildMap(std::vector<SourcePoint>& out, int width, int height, const MapPar
 
 // Samples `src` through `map`. `step` is 0...1 from the pixel toward the map target.
 // `decay` multiplies the bilinear sample. `src` and `dst` must not overlap.
+// `shiftX` and `shiftY` move every source point by that many pixels, as the original's
+// slide shift (slider1) offset the source pointer.
 void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
-                 const SourcePoint* map, float step, float decay);
+                 const SourcePoint* map, float step, float decay, float shiftX = 0, float shiftY = 0);
 
 // Original weightsum numerator for this area. The per-frame multiplier at 30 fps is numerator/256.
 int weightNumerator(int width, int height);

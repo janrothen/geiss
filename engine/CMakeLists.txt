@@ -12,6 +12,7 @@ add_library(geiss_engine STATIC
     src/effects.cpp
     src/map.cpp
     src/palette.cpp
+    src/shift.cpp
     src/engine.cpp
 )
 target_include_directories(geiss_engine PUBLIC include)

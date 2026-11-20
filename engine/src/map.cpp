@@ -465,7 +465,7 @@ void buildMap(std::vector<SourcePoint>& out, int width, int height, const MapPar
 }
 
 void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
-                 const SourcePoint* map, float step, float decay) {
+                 const SourcePoint* map, float step, float decay, float shiftX, float shiftY) {
     if (width < 2 || height < 2 || src == nullptr || dst == nullptr || map == nullptr) {
         return;
     }
@@ -479,8 +479,8 @@ void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int heig
             const SourcePoint target = map[index];
             // Columns wrap around, as the original's newx did (newx += FXW-1 while below 0),
             // so maps that read past the side edges pull in the opposite edge. Rows clamp.
-            const float sx = wrapX(static_cast<float>(x) + (target.x - static_cast<float>(x)) * step, width);
-            float sy = static_cast<float>(y) + (target.y - static_cast<float>(y)) * step;
+            const float sx = wrapX(static_cast<float>(x) + (target.x - static_cast<float>(x)) * step + shiftX, width);
+            float sy = static_cast<float>(y) + (target.y - static_cast<float>(y)) * step + shiftY;
             sy = std::clamp(sy, 0.f, maxY);
 
             const int x0 = std::clamp(static_cast<int>(sx), 0, width - 1);

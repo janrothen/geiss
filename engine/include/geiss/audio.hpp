@@ -70,6 +70,7 @@ struct AudioFrame {
     bool beatMode = false;
     float beatBrightness = 1;
     float bigBeatRatio = 0;
+    float bassAverage = 0;
 };
 
 // Turns PCM into an AudioFrame, including the beat state from BeatDetector.

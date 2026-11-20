@@ -164,6 +164,7 @@ AudioFrame Analyzer::analyze(const PcmBlock& block, int columns, float gain) {
     frame.beatMode = beat.beatMode;
     frame.beatBrightness = beat.brightness;
     frame.bigBeatRatio = beat.bigBeatRatio;
+    frame.bassAverage = beat.bassAverage;
     if (columns < 1) {
         return frame;
     }

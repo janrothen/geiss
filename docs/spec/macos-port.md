@@ -51,7 +51,12 @@ Build a modernized Geiss visualizer for Apple Silicon Macs. Preserve the recogni
 - In beat mode, the waveform brightness scales from 0 at the average bass to full at half a standard deviation above it, so the line flashes on hits and goes dark between them. A hit draws at the top of the palette, its brightest entry, so it stands out from the dimmer trails. The palette has no white-hot top, as in the original, so how strongly a hit stands out depends on the palette. The X-Y oscilloscope keeps its steady brightness, as in the original.
 - When the 20-second timer is due in beat mode, the new look waits for a big beat: the smoothed bass over the loudest of the previous 4/3 s, against a threshold that starts at 1.10. Intentional difference: the threshold relaxes by 0.2 over a 5-second wait instead of the original's 18 seconds, and the look changes when the wait ends. A steady beat therefore lands the change on a hit after about 1.3 s, and a louder hit lands it at once.
 - Lock still holds the look. Next still switches at once. Pause freezes the timer and the wait.
-- The horizontal slide shift on beats waits. There is no beat control.
+- The slide shift ports the original's shifting (`main.cpp`: `slider1`, `g_ShiftMaxVol`, `g_FramesSinceShift`) in `engine/src/shift.cpp`. Each look allows it with the original's default chance of 33%. While a look allows it and beat mode is on, a bass peak above the tracked peak raises that peak to 5% above itself, and, when more than 2 reference frames without a peak have passed since the last shift, moves every warp source point by a new offset: 0, 1, or 2 pixels sideways at 640 wide (`((rand() % 320) + 50) / 145`), alternating direction, and one row up, down, or not at all. Both scale with the width. Between peaks the tracked peak relaxes toward 1.43 times the bass history's average at 0.975 per reference frame. The offset applies once per reference frame, whatever the map's damping, so the picture drifts that way until the next peak.
+  - Intentional difference: peaks follow the bass level that drives beat mode, instead of the composite volume.
+  - Intentional difference: the original flipped the sideways direction when its whole offset, vertical part included, was positive. Here only the sideways part counts, so the direction always alternates, as its comment intended.
+  - Intentional difference: the original offset a flat pixel pointer, so a sideways shift spilled into the neighboring row at the edges. Here columns wrap and rows clamp, as for the maps.
+  - As in the original, the drift holds when beat mode ends or the sound stops, and only a new look that does not allow the shift clears it. A new look that allows it keeps the previous drift until its first shift. Lock keeps the shift following peaks. Pause freezes it. Whether a drift that continues through silence is calm enough is open.
+- There is no beat control.
 - The exact OS signal for a denied tap is confirmed during the prototype and recorded here.
 
 ## Rendering
@@ -190,6 +195,7 @@ The index buffer is unchanged, and each look picks a palette from the original's
 - Which existing configuration options, beyond the prototype slice, should be preserved, modernized, or left out?
 - Which OS error indicates that system-audio recording permission was denied?
 - Does a tap whose permission is revoked at runtime stop its callbacks, or keep delivering silence?
+- Should a slide-shift drift stop when beat mode ends or the sound goes quiet? The original kept drifting until the next look.
 - Later decisions: a GPU warp, size and quality settings, presets, multi-display, a menu-bar extra, the screensaver host, sandboxing, and a public name.
 
 ## Existing experience inventory (discussion draft)
@@ -210,7 +216,7 @@ The Windows project has a substantial set of rendering behaviors and options. So
 - **Color behavior:** palette generation, gamma, coarse and solar palette frequency, and optional sound-synchronized color. The 8-bit palette-specific controls reflect old color modes. The port picks palettes with the original's generator at its default gamma, coarse, and solar settings, which are not controls. Optional audio-linked color remains later work.
 - **Beat detection:** controls beat-responsive behavior. Beat brightness and look changes on a big beat follow the original, from a bass-focused detector. A user-facing beat control waits.
 - **Automatic map changes:** controls how long maps are generated and shown. The first version evolves automatically. A pace setting waits, and any later control uses seconds.
-- **Automatic horizontal shifting:** percentage and frequency, plus a minimum interval between shifts. Keep this only if it remains visually valuable. Any later timing is frame-rate independent.
+- **Automatic horizontal shifting:** percentage and frequency, plus a minimum interval between shifts. The port keeps the shifting at the original's default 33% of looks, with frame-rate-independent timing, and has no setting for it.
 - **Rendering resolution, color depth, adapter selection, frame idle delay:** Windows and DirectDraw performance controls. The first version uses the capped simulation size in [Rendering](#rendering). A quality setting waits.
 - **Help messages, debug info, suppress all messages:** help overlay and diagnostics. Keep diagnostics developer-only. On-screen help in the visualization waits.
 
@@ -227,7 +233,7 @@ The Windows project has a substantial set of rendering behaviors and options. So
 - Automatic variation: visuals evolve on their own. Pause freezes the picture. Lock holds the current map, waveform, and palette while audio motion continues. Next visual advances the look.
 - Initial controls: sensitivity, pause, lock, and next visual.
 - Pixels: portable C++ simulates 8-bit palette indices, then expands them to RGBA8. Metal uploads and scales that buffer.
-- Current picture: all 25 original map modes and all 6 waveforms, picked with the original's weights and excluded pairs. The window opens on mode 25 and waveform 1. Next and the 20-second timer pick a different pair. Each look also picks up to a few of the original's seven layered effects, with its per-map weights. Lock holds the pair, its effects, and the palette. Pause freezes the picture. Each look picks a palette from the original's generator, with no white-hot top, and blends to it over 0.3 s. Each frame feeds back through the same warp. No new controls. Beats brighten the waveform and land look changes, from a bass-focused detector. The horizontal slide shift waits. Chunked map generation, a GPU warp, and the screen saver host wait.
+- Current picture: all 25 original map modes and all 6 waveforms, picked with the original's weights and excluded pairs. The window opens on mode 25 and waveform 1. Next and the 20-second timer pick a different pair. Each look also picks up to a few of the original's seven layered effects, with its per-map weights. Lock holds the pair, its effects, and the palette. Pause freezes the picture. Each look picks a palette from the original's generator, with no white-hot top, and blends to it over 0.3 s. Each frame feeds back through the same warp. No new controls. Beats brighten the waveform and land look changes, from a bass-focused detector. A third of the looks drift on beats with the original's slide shift. Chunked map generation, a GPU warp, and the screen saver host wait.
 - Launch: the visualizer opens immediately. Denied or failed capture keeps calm motion and shows an overlay that opens System Settings.
 
 ### Choices considered

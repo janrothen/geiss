@@ -314,10 +314,12 @@ Look randomLook(Random& random) {
 
 // The effect layer draws its particles from its own generator, so the frame rate does not
 // change which looks come up.
-Engine::Engine(std::uint32_t seed) : effectLayer_(seed ^ 0x5BD1E995u) {
+// The slide shift draws its offsets from its own generator for the same reason.
+Engine::Engine(std::uint32_t seed) : effectLayer_(seed ^ 0x5BD1E995u), slideShift_(seed ^ 0x27D4EB2Fu) {
     random_.state = seed == 0 ? 1u : seed;
     pickEffects();
     pickPalette(false);
+    slideShift_.startLook(SlideShift::rollAllowed(random_));
     resize(960, 540);
 }
 
@@ -370,6 +372,7 @@ void Engine::pickLook() {
     waveform_ = picked.waveform;
     pickEffects();
     pickPalette(true);
+    slideShift_.startLook(SlideShift::rollAllowed(random_));
 }
 
 // FX_Random_Palette ran with each new map. Like the effects, it reads whether there was sound.
@@ -470,7 +473,10 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
 
     motionTime_ += dt;
     // Dampened modes move half as far per frame, as mode_motion_dampened did.
-    const float step = static_cast<float>(std::min(dt * kReferenceFps, 1.0)) * mapParameters_.damping;
+    const float frameStep = static_cast<float>(std::min(dt * kReferenceFps, 1.0));
+    const float step = frameStep * mapParameters_.damping;
+    // The shift keeps following peaks while locked, like the rest of the audio motion.
+    slideShift_.update(dt, audio, width_);
     const float perReferenceFrame =
         static_cast<float>(weightNumerator(width_, height_)) / 256.f * mapParameters_.decay;
     const float decay = static_cast<float>(std::pow(static_cast<double>(perReferenceFrame), dt * kReferenceFps));
@@ -478,7 +484,9 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     effectLayer_.draw(front_.data(), width_, height_, effects_, mapParameters_.mode,
                       mapParameters_.centerXNorm * static_cast<float>(width_),
                       mapParameters_.centerYNorm * static_cast<float>(height_), dt * kReferenceFps, audio);
-    warpIndices(front_.data(), back_.data(), width_, height_, map_.data(), step, decay);
+    // The original added slider1 to the source pointer once per frame, whatever the map's damping.
+    warpIndices(front_.data(), back_.data(), width_, height_, map_.data(), step, decay,
+                slideShift_.x() * frameStep, slideShift_.y() * frameStep);
     if (!effects_.hideWaveform) {
         drawWaveform(back_.data(), width_, height_, audio, waveform_, mapParameters_.mode, mapParameters_.centerXNorm,
                      mapParameters_.centerYNorm, static_cast<float>(motionTime_));

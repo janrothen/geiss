@@ -49,6 +49,8 @@ struct BeatState {
     // Smoothed bass over the loudest smoothed bass of the previous 4/3 s. A ratio
     // above the big-beat threshold is a big beat (bBigBeat in the original).
     float bigBeatRatio = 0;
+    // Average of the smoothed bass history (avg_vol_uniform in the original).
+    float bassAverage = 0;
 };
 
 // Bass level of one interleaved block. Two one-pole low-pass stages at `kBassCutoffHz`
