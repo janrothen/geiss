@@ -48,6 +48,10 @@ constexpr double kMapInterval = 20.0;
 // PutPalette blended to a new palette over 18 steps, counted down twice per frame:
 // about 9 frames, or 0.3 s at 30 fps.
 constexpr double kPaletteBlendSeconds = 0.3;
+// The original's SoundEmpty: true after frames_til_auto_switch * 2 (1100) frames of silence
+// at 30 fps. Only then does a new palette get the brighter silent gamma, so a short gap
+// between tracks, or the first look after launch, keeps the normal gamma.
+constexpr double kSoundEmptySeconds = 1100.0 / kReferenceFps;
 // When a look is due during beat mode, it waits for a big beat, as the finished map did in
 // the original. The threshold starts at 1.10 and relaxes by 0.2.
 // Intentional difference: the original relaxed over its 550-frame (about 18 s) switch
@@ -372,16 +376,18 @@ void Engine::pickLook() {
 void Engine::pickPalette(bool blend) {
     paletteRecipe_ = randomPaletteRecipe(random_);
     fromPalette_ = palette_;
-    targetPalette_ = buildPalette(paletteRecipe_, !soundActive_);
+    targetPalette_ = buildPalette(paletteRecipe_, soundEmpty());
     paletteBlendLeft_ = blend ? kPaletteBlendSeconds : 0;
     if (!blend) {
         palette_ = targetPalette_;
     }
 }
 
+bool Engine::soundEmpty() const { return silentSeconds_ > kSoundEmptySeconds; }
+
 void Engine::setPalette(const PaletteRecipe& recipe) {
-    paletteRecipe_ = recipe;
-    targetPalette_ = buildPalette(paletteRecipe_, !soundActive_);
+    paletteRecipe_ = clampedPaletteRecipe(recipe);
+    targetPalette_ = buildPalette(paletteRecipe_, soundEmpty());
     palette_ = targetPalette_;
     paletteBlendLeft_ = 0;
     expandPalette(front_.data());
@@ -445,6 +451,7 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     }
 
     soundActive_ = !audio.silent && !audio.samples.empty();
+    silentSeconds_ = soundActive_ ? 0 : silentSeconds_ + dt;
     if (!locked_) {
         mapElapsed_ += dt;
         if (mapElapsed_ >= kMapInterval && lookMayChange(mapElapsed_ - kMapInterval, audio)) {

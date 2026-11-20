@@ -82,6 +82,14 @@ float paletteCurve(int id, int index) {
     }
 }
 
+PaletteRecipe clampedPaletteRecipe(PaletteRecipe recipe) {
+    recipe.monotoneOrder = std::clamp(recipe.monotoneOrder, 0, kMonotoneOrders - 1);
+    for (int& curve : recipe.curves) {
+        curve = std::clamp(curve, kFirstPaletteCurve, kLastPaletteCurve);
+    }
+    return recipe;
+}
+
 PaletteRecipe randomPaletteRecipe(Random& random) {
     PaletteRecipe recipe;
     if (random.below(10) < kCoarseChanceOutOf10) {
@@ -105,7 +113,8 @@ PaletteRecipe randomPaletteRecipe(Random& random) {
     return recipe;
 }
 
-Palette buildPalette(const PaletteRecipe& recipe, bool soundEmpty) {
+Palette buildPalette(const PaletteRecipe& unclamped, bool soundEmpty) {
+    const PaletteRecipe recipe = clampedPaletteRecipe(unclamped);
     Palette palette{};
     for (int n = 0; n < 256; ++n) {
         float red = 0;

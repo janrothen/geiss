@@ -95,7 +95,9 @@ public:
 
     // The current look's palette. Each new look picks its own and blends to it.
     const PaletteRecipe& palette() const { return paletteRecipe_; }
-    // Replaces the palette at once, without a blend.
+    // The colors on screen, partway through a blend while one runs.
+    const Palette& paletteColors() const { return palette_; }
+    // Replaces the palette at once, without a blend. Out-of-range curves and orders are clamped.
     void setPalette(const PaletteRecipe& recipe);
 
     // `dt` is seconds. Gaps longer than 0.1s count as 0.1s.
@@ -107,6 +109,7 @@ private:
     void pickEffects();
     void rebuildMap();
     void pickPalette(bool blend);
+    bool soundEmpty() const;
     void expandPalette(const std::uint8_t* indices);
 
     int width_ = 0;
@@ -130,6 +133,8 @@ private:
     EffectLayer effectLayer_;
     // Whether the latest audio had sound. Effects for a new look are picked with it.
     bool soundActive_ = false;
+    // Seconds of unbroken silence. A palette picked after a long silence is brighter.
+    double silentSeconds_ = 0;
     std::vector<SourcePoint> map_;
     std::vector<std::uint8_t> front_;
     std::vector<std::uint8_t> back_;

@@ -545,13 +545,19 @@ void testRandomPaletteRecipes() {
 }
 
 void testEnginePalettes() {
+    // Over 30 s the 20-second timer changes the unlocked engine's palette, but not the locked one's.
     geiss::Engine locked(4);
+    geiss::Engine unlocked(4);
     locked.resize(64, 48);
+    unlocked.resize(64, 48);
     locked.setLocked(true);
     const geiss::PaletteRecipe held = locked.palette();
+    check(unlocked.palette() == held, "the same seed picks the same first palette");
     for (int i = 0; i < 300; ++i) {
         locked.tick(0.1, beatFrame(false, 1.f, 0.f));
+        unlocked.tick(0.1, beatFrame(false, 1.f, 0.f));
     }
+    check(!(unlocked.palette() == held), "the timer changes an unlocked palette");
     check(locked.palette() == held, "lock holds the palette");
 
     geiss::Engine next(4);
@@ -579,6 +585,76 @@ void testEnginePalettes() {
     }
     check(brightest == 255, "a full-brightness line draws at the palette's top");
     check(top.palette() == plain, "setPalette replaces the palette");
+
+    geiss::PaletteRecipe wild;
+    wild.curves = {0, 9, 2};
+    wild.monotoneOrder = 7;
+    top.setPalette(wild);
+    check(top.palette().curves == std::array<int, 3>{1, 7, 2}, "setPalette clamps curves to 1...7");
+    check(top.palette().monotoneOrder == 3, "setPalette clamps the monotone order to 0...3");
+    check(entry(geiss::buildPalette(wild, false), 0)[0] == 0, "an out-of-range curve does not turn white");
+}
+
+void testEnginePaletteBlend() {
+    const geiss::AudioFrame loud = beatFrame(false, 1.f, 0.f);
+    geiss::Engine engine(6);
+    engine.resize(32, 24);
+    engine.setEffects({});
+    const geiss::Palette old = engine.paletteColors();
+    engine.nextVisual();
+    const geiss::Palette target = geiss::buildPalette(engine.palette(), false);
+    check(engine.paletteColors() == old, "a new palette does not jump in");
+
+    engine.tick(0.1, loud);
+    const geiss::Palette third = engine.paletteColors();
+    const geiss::Palette expected = geiss::blendPalettes(old, target, 1.f / 3.f);
+    bool nearThird = !(third == target);
+    for (std::size_t i = 0; i < third.size(); ++i) {
+        nearThird = nearThird && std::abs(static_cast<int>(third[i]) - static_cast<int>(expected[i])) <= 1;
+    }
+    check(nearThird, "after 0.1 s the blend is a third of the way");
+
+    engine.setPaused(true);
+    engine.tick(0.1, loud);
+    check(engine.paletteColors() == third, "pause holds the blend");
+
+    engine.setPaused(false);
+    engine.setLocked(true);
+    engine.tick(0.1, loud);
+    engine.tick(0.1, loud);
+    check(engine.paletteColors() == target, "the blend ends at the new palette after 0.3 s, even while locked");
+    engine.tick(0.1, loud);
+    check(engine.paletteColors() == target, "the blend stays at the new palette");
+}
+
+void testPaletteSilentGamma() {
+    geiss::PaletteRecipe plain;
+    plain.curves = {2, 2, 2};
+    const geiss::Palette normal = geiss::buildPalette(plain, false);
+    const geiss::Palette boosted = geiss::buildPalette(plain, true);
+
+    geiss::Engine fresh(2);
+    fresh.resize(32, 24);
+    fresh.setPalette(plain);
+    check(fresh.paletteColors() == normal, "the first palette after launch has the normal gamma");
+
+    geiss::AudioFrame quiet = beatFrame(false, 1.f, 0.f);
+    quiet.silent = true;
+    geiss::Engine engine(2);
+    engine.resize(32, 24);
+    for (int i = 0; i < 300; ++i) {
+        engine.tick(0.1, quiet);
+    }
+    engine.setPalette(plain);
+    check(engine.paletteColors() == normal, "30 s of silence is not yet SoundEmpty");
+    for (int i = 0; i < 80; ++i) {
+        engine.tick(0.1, quiet);
+    }
+    engine.setPalette(plain);
+    check(engine.paletteColors() == boosted, "after about 37 s of silence a palette gets the silent gamma");
+    engine.tick(0.1, beatFrame(false, 1.f, 0.f));
+    engine.setPalette(plain);
+    check(engine.paletteColors() == normal, "sound ends SoundEmpty at once");
 }
 
 geiss::MapParameters centeredMap(int mode) {
@@ -1353,6 +1429,8 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testBlendPalettes();
     testRandomPaletteRecipes();
     testEnginePalettes();
+    testEnginePaletteBlend();
+    testPaletteSilentGamma();
     testEveryModeBuildsAFiniteMap();
     testModeDampingAndDecay();
     testNewModeShapes();

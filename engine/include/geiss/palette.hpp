@@ -70,10 +70,13 @@ struct PaletteRecipe {
 // CrankPal: curve `id` at palette index 0...255, before gamma and clamping.
 float paletteCurve(int id, int index);
 
+// Clamps curves to 1...7 and the monotone order to 0...3, so every recipe builds a real palette.
+PaletteRecipe clampedPaletteRecipe(PaletteRecipe recipe);
+
 // FX_Random_Palette's pick at the original's default settings (coarse and solar frequency 1).
 PaletteRecipe randomPaletteRecipe(Random& random);
 
-// The table FX_Random_Palette builds. `soundEmpty` adds the original's +0.3 gamma in silence.
+// The table FX_Random_Palette builds, from the clamped recipe. `soundEmpty` adds the original's +0.3 gamma after a long silence.
 Palette buildPalette(const PaletteRecipe& recipe, bool soundEmpty);
 
 // `t` 0 is `from`, 1 is `to`. PutPalette blended linearly.
