@@ -59,5 +59,6 @@ Effects draw into the previous frame before the warp, so the map smears them int
 ## Other terms
 
 - **Look:** a map, a waveform, that map's effects, and a palette. Next and the 20-second timer pick a new look. Lock holds the current one.
+- **Slide shift:** about a third of the looks nudge the whole picture a few pixels sideways, and sometimes a row up or down, on loud bass hits in beat mode. Each hit reverses the sideways direction. The picture keeps drifting that way until the next hit. The original called it "shifting".
 - **Palette:** the 256 colors the picture's brightness levels map to, built by the original's generator. A *monotone* palette is one of the original FX's four fixed palettes. The others give each color channel its own curve. A *solar* curve ripples and tints the background. A *coarse band* doubles a narrow range of dim levels, so a bright ring shows in the fading trails. A new palette blends in over 0.3 s.
 - **Center darkening:** 13 of the maps darken the pixels at their center every frame, so the zoom does not burn a hot spot there. It belongs to the map, so it continues in silence.

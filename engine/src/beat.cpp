@@ -115,6 +115,7 @@ BeatState BeatDetector::update(float bass, double elapsed) {
         average += at(age);
     }
     average /= static_cast<float>(filled_);
+    state.bassAverage = average;
 
     // Beat mode: the smoothed bass tape is evenly bumpy with high amplitude.
     float strength = 0;

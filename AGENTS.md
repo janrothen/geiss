@@ -31,9 +31,9 @@ The app taps the default output mix. Playback continues. The audio callback only
 
 The window controls are sensitivity (persisted, default 1.0), pause, lock, and next visual. The bar hides after a few seconds. Space pauses, L locks, and N or the right arrow advances the look. I toggles a debug readout in the top-left corner with the FPS, the map, the waveform, and the effects, named as in [`docs/glossary.md`](docs/glossary.md). It starts hidden and is not persisted.
 
-Beats come from a bass-focused port of the original detector (`engine/src/beat.cpp`). In beat mode the waveform flashes at the palette's top on hits, except the oscilloscope, and a due look waits up to 5 seconds for a big beat. Lock and Next are unchanged. The spec's Beat response section has the details.
+Beats come from a bass-focused port of the original detector (`engine/src/beat.cpp`). In beat mode the waveform flashes at the palette's top on hits, except the oscilloscope, and a due look waits up to 5 seconds for a big beat. A third of the looks also drift on beats with the original's slide shift (`engine/src/shift.cpp`), which holds until the next peak or a look without it. Lock and Next are unchanged. The spec's Beat response section has the details.
 
-Still ahead: the horizontal slide shift on beats, audio-linked color, chunked map generation, a GPU warp, size and quality settings, presets, multi-display, a screen saver host, sandboxing, and public distribution wait.
+Still ahead: audio-linked color, chunked map generation, a GPU warp, size and quality settings, presets, multi-display, a screen saver host, sandboxing, and public distribution wait.
 
 ## Porting guidance
 

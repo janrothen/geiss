@@ -37,6 +37,7 @@
 #include "geiss/engine.hpp"
 #include "geiss/map.hpp"
 #include "geiss/palette.hpp"
+#include "geiss/shift.hpp"
 
 #include <algorithm>
 #include <array>
@@ -657,6 +658,186 @@ void testPaletteSilentGamma() {
     check(engine.paletteColors() == normal, "sound ends SoundEmpty at once");
 }
 
+geiss::AudioFrame bassFrame(bool beatMode, float bass, float average) {
+    geiss::AudioFrame audio;
+    audio.beatMode = beatMode;
+    audio.bass = bass;
+    audio.bassAverage = average;
+    return audio;
+}
+
+// One loud hit after `quietFrames` quiet frames at 30 fps. Each hit is louder than the last
+// so it always beats the peak, which sits 5% above the previous hit.
+void hit(geiss::SlideShift& shift, int quietFrames, float& loud, int width = 640) {
+    for (int i = 0; i < quietFrames; ++i) {
+        shift.update(1.0 / 30.0, bassFrame(true, 0.f, 0.1f), width);
+    }
+    loud *= 1.06f;
+    shift.update(1.0 / 30.0, bassFrame(true, loud, 0.1f), width);
+}
+
+void testSlideShiftPicks() {
+    constexpr int draws = 30000;
+    geiss::Random random{13};
+    int allowed = 0;
+    for (int i = 0; i < draws; ++i) {
+        allowed += geiss::SlideShift::rollAllowed(random) ? 1 : 0;
+    }
+    check(allowed > draws * 30 / 100 && allowed < draws * 36 / 100, "about a third of looks allow the slide shift");
+
+    geiss::SlideShift off(1);
+    off.startLook(false);
+    float loud = 1.f;
+    for (int i = 0; i < 20; ++i) {
+        hit(off, 4, loud);
+    }
+    check(off.count() == 0 && off.x() == 0.f && off.y() == 0.f, "a look without the shift never drifts");
+
+    geiss::SlideShift calm(1);
+    calm.startLook(true);
+    for (int i = 0; i < 20; ++i) {
+        calm.update(1.0 / 30.0, bassFrame(false, static_cast<float>(i), 0.1f), 640);
+    }
+    check(calm.count() == 0, "the shift waits for beat mode");
+}
+
+void testSlideShiftOnPeaks() {
+    geiss::SlideShift shift(3);
+    shift.startLook(true);
+    float loud = 1.f;
+    hit(shift, 0, loud);
+    check(shift.count() == 0, "the first peak only sets the level to beat");
+    hit(shift, 3, loud);
+    check(shift.count() == 1, "a peak after three quiet frames shifts");
+    hit(shift, 2, loud);
+    check(shift.count() == 1, "a peak within two quiet frames does not shift");
+    hit(shift, 3, loud);
+    check(shift.count() == 2, "the next spaced peak shifts again");
+
+    std::set<int> xs;
+    std::set<int> ys;
+    bool valid = true;
+    bool alternates = true;
+    for (int i = 0; i < 400; ++i) {
+        const float before = shift.x();
+        hit(shift, 3, loud);
+        const float x = shift.x();
+        const float y = shift.y();
+        valid = valid && x == std::round(x) && std::fabs(x) <= 2.f && (y == -1.f || y == 0.f || y == 1.f);
+        alternates = alternates && (before > 0.f ? x <= 0.f : x >= 0.f);
+        xs.insert(static_cast<int>(x));
+        ys.insert(static_cast<int>(y));
+    }
+    check(shift.count() == 402, "every spaced, louder peak shifts");
+    check(valid, "a shift is 0 to 2 pixels sideways and one row at most at 640 wide");
+    check(alternates, "the sideways direction alternates");
+    check(xs.size() == 5 && ys.size() == 3, "every offset comes up");
+
+    geiss::SlideShift wide(3);
+    wide.startLook(true);
+    float wideLoud = 1.f;
+    hit(wide, 0, wideLoud, 1280);
+    bool doubled = true;
+    for (int i = 0; i < 40; ++i) {
+        hit(wide, 3, wideLoud, 1280);
+        doubled = doubled && std::fmod(wide.x(), 2.f) == 0.f && std::fmod(wide.y(), 2.f) == 0.f;
+    }
+    check(doubled, "the shift scales with the width");
+
+    const float heldX = shift.x();
+    const float heldY = shift.y();
+    for (int i = 0; i < 30; ++i) {
+        shift.update(1.0 / 30.0, bassFrame(false, 0.f, 0.f), 640);
+    }
+    check(shift.x() == heldX && shift.y() == heldY, "the drift holds after beat mode ends, as in the original");
+    shift.startLook(true);
+    check(shift.x() == heldX && shift.y() == heldY, "a look that allows the shift keeps the drift");
+    shift.startLook(false);
+    check(shift.x() == 0.f && shift.y() == 0.f, "a look without the shift stops the drift");
+}
+
+void testPeakRelaxes() {
+    // After a very loud hit, a steady beat at a quarter of it shifts again once the peak
+    // has relaxed toward 1.43 times the average.
+    geiss::SlideShift shift(5);
+    shift.startLook(true);
+    shift.update(1.0 / 30.0, bassFrame(true, 4.f, 0.5f), 640);
+    int frames = 0;
+    while (shift.count() == 0 && frames < 300) {
+        shift.update(1.0 / 30.0, bassFrame(true, 0.f, 0.5f), 640);
+        shift.update(1.0 / 30.0, bassFrame(true, 0.f, 0.5f), 640);
+        shift.update(1.0 / 30.0, bassFrame(true, 0.f, 0.5f), 640);
+        shift.update(1.0 / 30.0, bassFrame(true, 1.f, 0.5f), 640);
+        frames += 4;
+    }
+    // 4.2 relaxes toward 0.715 at 0.975 per frame and falls below 1 after about 99 frames.
+    check(frames >= 96 && frames <= 104, "the peak relaxes toward 1.43 times the bass average");
+
+    // The same relaxation at 60 fps takes the same time.
+    geiss::SlideShift fast(5);
+    fast.startLook(true);
+    fast.update(1.0 / 60.0, bassFrame(true, 4.f, 0.5f), 640);
+    int fastFrames = 0;
+    while (fast.count() == 0 && fastFrames < 600) {
+        for (int i = 0; i < 7; ++i) {
+            fast.update(1.0 / 60.0, bassFrame(true, 0.f, 0.5f), 640);
+        }
+        fast.update(1.0 / 60.0, bassFrame(true, 1.f, 0.5f), 640);
+        fastFrames += 8;
+    }
+    check(std::abs(fastFrames / 2 - frames) <= 4, "the peak relaxes by time, not frames");
+}
+
+void testWarpShift() {
+    constexpr int width = 16;
+    constexpr int height = 12;
+    std::vector<geiss::SourcePoint> identity;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            identity.push_back({static_cast<float>(x), static_cast<float>(y)});
+        }
+    }
+    std::vector<std::uint8_t> src(std::size_t{width} * height, 0);
+    std::vector<std::uint8_t> dst(src.size(), 0);
+    src[std::size_t{5} * width + 5] = 200;
+    geiss::warpIndices(src.data(), dst.data(), width, height, identity.data(), 1.f, 1.f, 1.f, 0.f);
+    check(dst[std::size_t{5} * width + 4] == 200, "a positive sideways shift slides the picture left");
+    geiss::warpIndices(src.data(), dst.data(), width, height, identity.data(), 1.f, 1.f, 0.f, -1.f);
+    check(dst[std::size_t{6} * width + 5] == 200, "a negative vertical shift slides the picture down");
+}
+
+void testEngineSlideShift() {
+    geiss::Engine engine(8);
+    engine.resize(64, 48);
+    int allowed = 0;
+    for (int i = 0; i < 600; ++i) {
+        engine.nextVisual();
+        allowed += engine.slideShift().allowed() ? 1 : 0;
+    }
+    check(allowed > 150 && allowed < 250, "Next rolls the slide shift for each look");
+
+    engine.setSlideShiftAllowed(true);
+    engine.setLocked(true);
+    float loud = 1.f;
+    for (int i = 0; i < 10; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            engine.tick(1.0 / 30.0, bassFrame(true, 0.f, 0.1f));
+        }
+        loud *= 1.06f;
+        engine.tick(1.0 / 30.0, bassFrame(true, loud, 0.1f));
+    }
+    check(engine.slideShift().allowed() && engine.slideShift().count() == 10, "a locked look keeps shifting on peaks");
+}
+
+void testBassAverage() {
+    geiss::BeatDetector detector;
+    geiss::BeatState state;
+    for (int i = 0; i < 60; ++i) {
+        state = detector.update(0.3f, 1.0 / 30.0);
+    }
+    checkNear(state.bassAverage, 0.3f, 0.01f, "the detector reports the average smoothed bass");
+}
+
 geiss::MapParameters centeredMap(int mode) {
     geiss::Random random{7};
     geiss::MapParameters map = geiss::randomMapParameters(mode, 64, 64, random);
@@ -816,6 +997,15 @@ void testLookPicking() {
 }
 
 // A fresh engine moved to `waveform` by Next, ticked once with a silent-looking flat wave.
+// A plain x * 2 palette, whose index 0 is black, and no slide shift, so a test sees
+// only what it draws.
+void pinLook(geiss::Engine& engine) {
+    geiss::PaletteRecipe plain;
+    plain.curves = {2, 2, 2};
+    engine.setPalette(plain);
+    engine.setSlideShiftAllowed(false);
+}
+
 geiss::Engine engineDrawing(int waveform, int width, int height) {
     geiss::Engine engine(17);
     engine.resize(width, height);
@@ -824,6 +1014,7 @@ geiss::Engine engineDrawing(int waveform, int width, int height) {
     }
     check(engine.waveform() == waveform, "Next reaches every waveform");
     engine.setEffects({});
+    pinLook(engine);
     return engine;
 }
 
@@ -916,6 +1107,7 @@ geiss::Engine engineShowing(int mode, int width, int height) {
     }
     check(engine.mapMode() == mode && engine.waveform() == 1, "Next reaches the requested map with waveform 1");
     engine.setEffects({});
+    pinLook(engine);
     return engine;
 }
 
@@ -1424,6 +1616,12 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testLookWaitsForBigBeat();
     testVolumeScale();
     testWaveBrightnessFollowsVolume();
+    testSlideShiftPicks();
+    testSlideShiftOnPeaks();
+    testPeakRelaxes();
+    testWarpShift();
+    testBassAverage();
+    testEngineSlideShift();
     testPaletteCurves();
     testBuildPalette();
     testBlendPalettes();
