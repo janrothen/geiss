@@ -1852,6 +1852,8 @@ void testEngineEffects() {
 double silentFade(double fps) {
     geiss::Engine engine = engineShowing(25, 160, 90);
     engine.setLocked(true);
+    // The fade itself, without the idle wave that rises over it.
+    engine.setIdleWave(false);
     const geiss::AudioFrame loud = beatFrame(false, 1.f, 0.f);
     for (int i = 0; i < static_cast<int>(2 * fps); ++i) {
         engine.tick(1.0 / fps, loud);
@@ -1874,6 +1876,67 @@ void testSilenceFadesAtAnyFrameRate() {
     check(silentFade(30) < 1.0, "the picture fades out in silence at 30 fps");
     check(silentFade(60) < 1.0, "the picture fades out in silence at 60 fps");
     check(silentFade(120) < 1.0, "the picture fades out in silence at 120 fps");
+}
+
+unsigned maxAlpha(const geiss::FrameView& frame) {
+    unsigned highest = 0;
+    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        highest = std::max<unsigned>(highest, frame.rgba[i * 4 + 3]);
+    }
+    return highest;
+}
+
+// Ticks `seconds` of silence at `fps` and returns the last frame.
+geiss::FrameView tickSilence(geiss::Engine& engine, double seconds, double fps) {
+    geiss::FrameView frame{};
+    for (int i = 0; i < static_cast<int>(seconds * fps); ++i) {
+        frame = engine.tick(1.0 / fps, quietFrame());
+    }
+    return frame;
+}
+
+void testIdleWave() {
+    geiss::Engine engine = engineDrawing(1, 160, 90);
+    engine.setLocked(true);
+    tickSilence(engine, 1.0, 30);
+    check(engine.idleLevel() == 0.f, "the idle wave waits through the first second of silence");
+    const geiss::FrameView settled = tickSilence(engine, 8.0, 30);
+    check(engine.idleLevel() == 1.f, "the idle wave has risen after about six seconds of silence");
+    check(litPixels(settled).size() > 160, "silence keeps a moving picture");
+    // A plain palette's highlight level is about its index, so this bounds the drawn index.
+    check(maxAlpha(settled) <= 140, "the idle wave stays in the palette's lower half");
+
+    const std::vector<std::pair<int, int>> before = litPixels(settled);
+    const std::vector<std::pair<int, int>> after = litPixels(tickSilence(engine, 2.0, 30));
+    check(before != after, "the idle wave moves");
+
+    engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    check(engine.idleLevel() == 0.f, "sound replaces the idle wave at once");
+
+    geiss::Engine paused = engineDrawing(1, 160, 90);
+    tickSilence(paused, 3.0, 30);
+    const float held = paused.idleLevel();
+    paused.setPaused(true);
+    tickSilence(paused, 2.0, 30);
+    check(paused.idleLevel() == held, "pause holds the idle wave");
+
+    geiss::Engine off = engineDrawing(1, 160, 90);
+    off.setIdleWave(false);
+    check(litPixels(tickSilence(off, 10.0, 30)).empty(), "with the idle wave off, silence fades to black");
+
+    // A nuclide look hides its waveform, and its rings rest in silence, so the idle wave
+    // draws the circle instead of leaving the picture dark.
+    geiss::Engine nuclide = engineDrawing(1, 160, 90);
+    nuclide.setLocked(true);
+    nuclide.setEffects(only(geiss::Effect::Nuclide));
+    check(!litPixels(tickSilence(nuclide, 8.0, 30)).empty(), "a nuclide look keeps an idle wave");
+
+    geiss::Engine slow = engineDrawing(1, 160, 90);
+    geiss::Engine fast = engineDrawing(1, 160, 90);
+    tickSilence(slow, 3.0, 30);
+    tickSilence(fast, 3.0, 120);
+    checkNear(slow.idleLevel(), fast.idleLevel(), 0.02f, "the idle wave rises at the same pace at any frame rate");
 }
 
 }  // namespace
@@ -1928,6 +1991,7 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testEngineEffects();
     testNames();
     testSoundActive();
+    testIdleWave();
     testWrapColumn();
     testBandsMatchSerial();
     testFrameChanged();

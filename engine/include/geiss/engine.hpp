@@ -100,6 +100,11 @@ public:
     void setSlideShiftAllowed(bool allowed) { slideShift_.startLook(allowed); }
     // Whether the latest unpaused tick had sound. The effects rest while it is false.
     bool soundActive() const { return soundActive_; }
+    // The idle wave: in silence, after a short wait, a faint made-up signal drawn with the
+    // look's waveform keeps the picture moving. 0 while there is sound, rising to 1.
+    float idleLevel() const { return static_cast<float>(idleLevel_); }
+    // On by default. A host that wants the picture to fade out in silence turns it off.
+    void setIdleWave(bool enabled) { idleWaveEnabled_ = enabled; }
     int width() const { return width_; }
 
     // Replaces the current look's effects, and rebuilds the map when mode 5 depends on
@@ -125,6 +130,8 @@ private:
     void pickPalette(bool blend);
     bool soundEmpty() const;
     void expandPalette(const std::uint8_t* indices);
+    void updateIdle(double dt);
+    void drawIdleWave();
 
     int width_ = 0;
     int height_ = 0;
@@ -160,6 +167,11 @@ private:
     bool soundActive_ = false;
     // Seconds of unbroken silence. A palette picked after a long silence is brighter.
     double silentSeconds_ = 0;
+    bool idleWaveEnabled_ = true;
+    // 0 with sound, rising to 1 after the idle wait. See `idleLevel`.
+    double idleLevel_ = 0;
+    // The idle wave's made-up signal, one value per column, refilled each tick it draws.
+    AudioFrame idleFrame_{};
     std::vector<SourcePoint> map_;
     std::vector<std::uint8_t> front_;
     std::vector<std::uint8_t> back_;

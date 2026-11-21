@@ -64,6 +64,23 @@ constexpr float kBigBeatRelax = 0.2f;
 constexpr double kMaxBeatWait = 5.0;
 constexpr double kBigBeatRelaxSeconds = kMaxBeatWait;
 
+// The idle wave. Intentional difference: the original drew nothing in silence, so the
+// picture faded to black. Here, once silence has lasted kIdleWaitSeconds, a made-up signal
+// rises over kIdleRiseSeconds and is drawn with the look's own waveform: the line becomes
+// a slow swell, two lines braid, the circle opens into a breathing flower, and the
+// oscilloscope traces a 3:2 Lissajous figure that slowly turns and morphs. Sound replaces
+// it at once. It stays in the palette's lower half, so it is calm and never glows on HDR.
+constexpr double kIdleWaitSeconds = 1.5;
+constexpr double kIdleRiseSeconds = 4.0;
+// Palette indices: the wave breathes between about 70 and 130 over kIdleBreathSeconds.
+constexpr float kIdleBright = 100.f;
+constexpr float kIdleBreath = 30.f;
+constexpr double kIdleBreathSeconds = 7.0;
+// The signal's size swells between 0.2 and 0.4 of a full-scale wave over kIdleSwellSeconds.
+constexpr float kIdleAmplitude = 0.3f;
+constexpr float kIdleSwell = 0.1f;
+constexpr double kIdleSwellSeconds = 11.0;
+
 bool lookMayChange(double overdue, const AudioFrame& audio) {
     if (!audio.beatMode || overdue >= kMaxBeatWait) {
         return true;
@@ -239,18 +256,8 @@ void drawCircle(std::uint8_t* indices, int width, int height, const AudioFrame& 
     }
 }
 
-void drawWaveform(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
-                  int waveform, int mode, float centerXNorm, float centerYNorm, float motionTime) {
-    if (indices == nullptr || audio.silent || audio.samples.empty() || width < 2 || height < 2) {
-        return;
-    }
-    // Beat-mode brightness follows each hit and goes dark between them. As in the
-    // original, the X-Y oscilloscope keeps its steady brightness.
-    const float beatScale = audio.beatMode && waveform != 6 ? std::clamp(audio.beatBrightness, 0.f, 1.f) : 1.f;
-    const int bright = static_cast<int>(waveBrightness(audio.volume, audio.averageVolume) * beatScale);
-    if (bright < 1) {
-        return;
-    }
+void drawShape(std::uint8_t* indices, int width, int height, const AudioFrame& audio, int bright,
+               int waveform, int mode, float centerXNorm, float centerYNorm, float motionTime) {
     switch (waveform) {
         case 2:
             drawTwoLines(indices, width, height, audio, bright, centerYNorm);
@@ -271,6 +278,35 @@ void drawWaveform(std::uint8_t* indices, int width, int height, const AudioFrame
             drawLine(indices, width, height, audio, bright, mode);
             break;
     }
+}
+
+void drawWaveform(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
+                  int waveform, int mode, float centerXNorm, float centerYNorm, float motionTime) {
+    if (indices == nullptr || audio.silent || audio.samples.empty() || width < 2 || height < 2) {
+        return;
+    }
+    // Beat-mode brightness follows each hit and goes dark between them. As in the
+    // original, the X-Y oscilloscope keeps its steady brightness.
+    const float beatScale = audio.beatMode && waveform != 6 ? std::clamp(audio.beatBrightness, 0.f, 1.f) : 1.f;
+    const int bright = static_cast<int>(waveBrightness(audio.volume, audio.averageVolume) * beatScale);
+    if (bright < 1) {
+        return;
+    }
+    drawShape(indices, width, height, audio, bright, waveform, mode, centerXNorm, centerYNorm, motionTime);
+}
+
+// The idle wave's signal at column position u (0...1) and time t. Left runs three slow
+// cycles across the frame and right two, so the oscilloscope draws a 3:2 figure. Each
+// side adds a faster, smaller partial drifting the other way, so the shape keeps changing
+// without repeating soon.
+float idleLeft(float u, float t) {
+    constexpr float kTau = 6.2831853f;
+    return 0.65f * std::sin(kTau * 3.f * u + 0.31f * t) + 0.35f * std::sin(kTau * 5.f * u - 0.17f * t + 1.3f);
+}
+
+float idleRight(float u, float t) {
+    constexpr float kTau = 6.2831853f;
+    return 0.65f * std::sin(kTau * 2.f * u + 0.23f * t + 0.7f) + 0.35f * std::sin(kTau * 7.f * u + 0.13f * t);
 }
 
 }  // namespace
@@ -501,10 +537,56 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
         drawWaveform(back_.data(), width_, height_, audio, waveform_, mapParameters_.mode, mapParameters_.centerXNorm,
                      mapParameters_.centerYNorm, static_cast<float>(motionTime_));
     }
+    updateIdle(dt);
+    drawIdleWave();
     expandPalette(back_.data());
     front_.swap(back_);
     frameChanged_ = false;
     return view;
+}
+
+void Engine::updateIdle(double dt) {
+    if (soundActive_ || !idleWaveEnabled_) {
+        idleLevel_ = 0;
+        return;
+    }
+    // silentSeconds_ already includes this tick.
+    if (silentSeconds_ >= kIdleWaitSeconds) {
+        idleLevel_ = std::min(idleLevel_ + dt / kIdleRiseSeconds, 1.0);
+    }
+}
+
+// Drawn after the warp, like the waveform. A look whose nuclide replaces the waveform draws
+// the idle wave as the circle, a stand-in for the nuclide's resting ring.
+void Engine::drawIdleWave() {
+    if (idleLevel_ <= 0) {
+        return;
+    }
+    const auto t = static_cast<float>(motionTime_);
+    constexpr double kTau = 6.283185307179586;
+    const auto level = static_cast<float>(idleLevel_);
+    const int bright = static_cast<int>(
+        level * (kIdleBright + kIdleBreath * static_cast<float>(std::sin(motionTime_ * kTau / kIdleBreathSeconds))));
+    if (bright < 1) {
+        return;
+    }
+    const float amplitude =
+        level * (kIdleAmplitude + kIdleSwell * static_cast<float>(std::sin(motionTime_ * kTau / kIdleSwellSeconds)));
+    const auto columns = static_cast<std::size_t>(width_);
+    idleFrame_.samples.resize(columns);
+    idleFrame_.left.resize(columns);
+    idleFrame_.right.resize(columns);
+    for (std::size_t x = 0; x < columns; ++x) {
+        const float u = static_cast<float>(x) / static_cast<float>(columns - 1);
+        const float left = idleLeft(u, t) * amplitude;
+        const float right = idleRight(u, t) * amplitude;
+        idleFrame_.left[x] = left;
+        idleFrame_.right[x] = right;
+        idleFrame_.samples[x] = 0.5f * (left + right);
+    }
+    const int waveform = effects_.hideWaveform ? 5 : waveform_;
+    drawShape(back_.data(), width_, height_, idleFrame_, bright, waveform, mapParameters_.mode,
+              mapParameters_.centerXNorm, mapParameters_.centerYNorm, t);
 }
 
 }  // namespace geiss
