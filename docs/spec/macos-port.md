@@ -33,7 +33,7 @@ Build a modernized Geiss visualizer for Apple Silicon Macs. Preserve the recogni
 
 - React to system audio output, including music, notifications, and other sounds.
 - Capture with a non-exclusive stereo Core Audio tap of the default output mix (`CATapDescription` and a private aggregate device). Playback continues. Recreate the tap when the default output device changes. If that device tap cannot be created, try one global stereo tap. A failure of both keeps calm motion and shows the settings overlay.
-- `NSAudioCaptureUsageDescription` supplies the system prompt. There is no public preflight API for this permission; the prompt appears when the tap starts.
+- `NSAudioCaptureUsageDescription` supplies the system prompt. There is no public preflight API for this permission; the prompt appears when the tap starts. macOS asks once. A declined app is not asked again, and it is not listed in System Settings until it is allowed or added with +. The switch that controls the tap is Privacy & Security → Screen & System Audio Recording → **System Audio Recording Only**; the screen-and-audio list above it does not affect it. An app gets an entry there only when it runs from an Applications folder, so a local build run from its build folder has nothing to switch on. (Observed on macOS 27.2, November 2026.)
 - Split the work into three pieces:
   - Capture, in Swift, copies PCM and returns from the audio callback. The callback converts the tap's 32-bit float stream to stereo straight into a preallocated ring. It does not allocate, wait on a lock, or log. If the reader is copying from the ring at that moment, the callback drops that block. Other tap formats are reported as a capture failure.
   - Analysis, in portable C++, turns that PCM into one immutable frame: samples, level, peak, volume and its average, silence, time, and the beat state (bass, beat mode, beat brightness, and big-beat ratio).
@@ -57,7 +57,7 @@ Build a modernized Geiss visualizer for Apple Silicon Macs. Preserve the recogni
   - Intentional difference: the original offset a flat pixel pointer, so a sideways shift spilled into the neighboring row at the edges. Here columns wrap and rows clamp, as for the maps.
   - As in the original, the drift holds when beat mode ends or the sound stops, and only a new look that does not allow the shift clears it. A new look that allows it keeps the previous drift until its first shift. Lock keeps the shift following peaks. Pause freezes it. Whether a drift that continues through silence is calm enough is open.
 - There is no beat control.
-- The exact OS signal for a denied tap is confirmed during the prototype and recorded here.
+- A denied tap has no OS error. It is created and started normally and delivers callbacks of exact zeros. See [When audio permission is missing](#when-audio-permission-is-missing).
 
 ## Rendering
 
@@ -93,9 +93,12 @@ Build a modernized Geiss visualizer for Apple Silicon Macs. Preserve the recogni
 
 - Waiting for permission, or granted with sound: the visual reacts to audio.
 - Granted and silent: the same motion continues, calm, with no error.
-- Denied, unavailable, or the tap fails: calm motion continues, and an overlay explains the state and opens System Settings. Revoking permission at runtime returns to that overlay.
-- A running tap that delivers no callbacks for three seconds is restarted, and a restart that cannot create the tap shows the overlay. Whether a revoked tap stops its callbacks or keeps delivering silence has not been observed yet. If it delivers silence, the app cannot tell revocation from a quiet Mac, and the picture stays calm without the overlay.
-- Returning to the app retries a failed tap. The overlay stays up during that retry.
+- Unavailable, or the tap fails: calm motion continues, and an overlay explains the state and opens System Settings.
+- Denied: macOS creates the tap without an error and delivers only exact zeros, so a denial looks like a quiet Mac. When another process is running audio output (Core Audio's process list, `kAudioProcessPropertyIsRunningOutput`, Geiss excluded) and the tap has delivered no sample other than exact zero for 2 seconds, checked every half second, the tap counts as silenced. So the overlay appears about 2 to 2.5 seconds after a denied tap starts while an app plays. The overlay says that Geiss may not be able to hear this Mac: an app has output open but Geiss hears only silence, and if sound is playing, turn on Geiss under System Audio Recording Only. It hedges because an app that keeps its output open while silent looks the same. Because macOS does not ask again, this overlay is how a declined user is asked, on every launch while the permission is off. The first non-zero sample clears it, and so does no other process running output, because then silence is expected; it returns about 2 seconds after output starts again if the tap still hears only zeros.
+- Permission applies when a tap is created. A running tap keeps the permission it started with: turning permission off does not silence it, and turning it on does not wake a silenced one. The next tap follows the new setting, for example after an output-device change or a relaunch. So revoking at runtime goes unnoticed until the tap is rebuilt, and that is accepted. A Bluetooth output can rebuild the tap more than once while it connects (AirPods were observed at 24 kHz, then at 48 kHz about 6 seconds later), and each rebuild starts the 2-second check again, so the overlay can take several seconds after such a switch. The log names the reason for each rebuild.
+- Returning to the app retries a failed tap and rebuilds a silenced one, so permission turned on in System Settings applies without a relaunch, and macOS's Quit & Reopen prompt can be answered Later. A silenced tap is rebuilt at most once every 5 seconds, so switching between apps does not keep recreating Core Audio devices. The overlay stays up during that retry, and for a silenced tap until it hears sound or no other process runs output.
+- Known limit: a process that keeps its output running while it plays exact silence, such as a paused player that holds its stream open, can raise the overlay with permission granted. Browsers with an idle audio context and call apps may do the same. The overlay clears when sound arrives or that output stops. With nothing playing at launch, a denial shows the calm picture alone until some app plays.
+- A running tap that delivers no callbacks for three seconds is restarted, and a restart that cannot create the tap shows the overlay.
 
 ## Prototype milestone
 
@@ -196,8 +199,8 @@ The index buffer is unchanged, and each look picks a palette from the original's
 ## Open questions
 
 - Which existing configuration options, beyond the prototype slice, should be preserved, modernized, or left out?
-- Which OS error indicates that system-audio recording permission was denied?
-- Does a tap whose permission is revoked at runtime stop its callbacks, or keep delivering silence?
+- Silence fades the picture to black, because the effects rest and the flat waveform darkens away. Should silence, and a denied tap, keep a faint calm motion instead, as "Granted and silent" above intends?
+- Is the silenced overlay's false alarm from apps that keep their output running while silent (paused players, idle browser audio, call apps) rare enough in practice, or does it need a second signal?
 - Should a slide-shift drift stop when beat mode ends or the sound goes quiet? The original kept drifting until the next look.
 - Later decisions: a GPU warp, size and quality settings, presets, multi-display, a menu-bar extra, the screensaver host, sandboxing, and a public name.
 

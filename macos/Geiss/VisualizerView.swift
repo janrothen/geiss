@@ -57,8 +57,8 @@ struct VisualizerView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .allowsHitTesting(false)
                 }
-                if case .failed(let status) = model.capture, model.preview == .system {
-                    captureOverlay(status: status)
+                if model.preview == .system, model.capture.isFailed || model.capture == .silenced {
+                    captureOverlay(model.capture)
                         .padding(.top, 28)
                         .frame(maxHeight: .infinity, alignment: .top)
                 }
@@ -142,11 +142,23 @@ struct VisualizerView: View {
         }
     }
 
-    private func captureOverlay(status: OSStatus) -> some View {
+    private func captureOverlay(_ capture: CaptureStatus) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Geiss cannot hear this Mac.")
-            Text(SystemAudioTap.statusText(status))
-                .foregroundStyle(amber)
+            if case .failed(let status) = capture {
+                Text("Geiss cannot hear this Mac.")
+                Text(SystemAudioTap.statusText(status))
+                    .foregroundStyle(amber)
+            } else {
+                // A tap without permission is created without an error and hears only silence.
+                // An app that keeps its output open while silent looks the same, so this hedges.
+                Text("Geiss may not be able to hear this Mac.")
+                Text(
+                    "An app has audio output open, but Geiss hears only silence.\n"
+                        + "If sound is playing, turn on Geiss under System Audio Recording Only, then come back."
+                )
+                    .foregroundStyle(amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Button("Open System Settings", action: model.openCaptureSettings)
                 .buttonStyle(.plain)
                 .padding(.horizontal, 8)
