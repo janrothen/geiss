@@ -111,9 +111,9 @@ public:
     void setSlideShiftAllowed(bool allowed) { slideShift_.startLook(allowed); }
     // Whether the latest unpaused tick had sound. The effects rest while it is false.
     bool soundActive() const { return soundActive_; }
-    // The idle wave: in silence, or sound too faint to draw the waveform, after a short wait,
-    // a faint made-up signal drawn with the look's waveform keeps the picture moving. 0 while
-    // the waveform draws, rising to 1.
+    // The idle wave: in silence, or sound whose line would draw dimmer than it, after a short
+    // wait, a faint made-up signal drawn with the look's waveform keeps the picture moving.
+    // Rises to 1, and louder sound fades it back to 0 within half a second.
     float idleLevel() const { return static_cast<float>(idleLevel_); }
     // On by default. A host that wants the picture to fade out in silence turns it off.
     void setIdleWave(bool enabled) { idleWaveEnabled_ = enabled; }
@@ -179,7 +179,7 @@ private:
     bool soundActive_ = false;
     // Seconds of unbroken silence. A palette picked after a long silence is brighter.
     double silentSeconds_ = 0;
-    // Seconds the live waveform has had nothing to draw: silence, or sound too faint for it.
+    // Seconds of silence, or of sound whose line would draw dimmer than the idle wave.
     // The idle wave waits on this.
     double faintSeconds_ = 0;
     bool idleWaveEnabled_ = true;
