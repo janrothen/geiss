@@ -58,6 +58,12 @@ struct Look {
     int waveform = 1;
 };
 
+// Max-blends a soft 5x5 spot centered on (x, y) into an index buffer: `bright` at the center,
+// about two thirds of it beside, falling to a twentieth at the corners. Clipped at the edges.
+// The idle wave draws its points this way, so points up to about three pixels apart, such as
+// the circle's at a large radius, run together into a soft line instead of a row of dots.
+void plotSoftSpot(std::uint8_t* indices, int width, int height, int x, int y, int bright);
+
 // False for the map and waveform pairs the original re-rolls, and for unknown numbers.
 bool lookAllowed(int mode, int waveform);
 

@@ -121,8 +121,15 @@ float waveBrightness(float volume, float averageVolume) {
     return base * 255.f / kBaseCeiling;
 }
 
-void plot(std::uint8_t* indices, int width, int height, int x, int y, int bright) {
-    if (x < 0 || y < 0 || x >= width || y >= height) {
+// How a waveform's points are drawn: the palette index, and whether each point is a soft
+// spot instead of one sharp pixel.
+struct Ink {
+    int bright = 0;
+    bool soft = false;
+};
+
+void plotPixel(std::uint8_t* indices, int width, int height, int x, int y, int bright) {
+    if (x < 0 || y < 0 || x >= width || y >= height || bright < 1) {
         return;
     }
     std::uint8_t& pixel = indices[static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)];
@@ -131,17 +138,51 @@ void plot(std::uint8_t* indices, int width, int height, int x, int y, int bright
     }
 }
 
+// A soft spot's 5x5 falloff, close to a Gaussian with a radius of about one pixel, in
+// 1/256ths of the center.
+constexpr std::array<int, 25> kSoftSpot = {
+    13, 48,  70,  48,  13,
+    48, 113, 169, 113, 48,
+    70, 169, 256, 169, 70,
+    48, 113, 169, 113, 48,
+    13, 48,  70,  48,  13,
+};
+
+}  // namespace
+
+void plotSoftSpot(std::uint8_t* indices, int width, int height, int x, int y, int bright) {
+    if (indices == nullptr) {
+        return;
+    }
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            const int weight = kSoftSpot.at((static_cast<std::size_t>(dy + 2) * 5) + static_cast<std::size_t>(dx + 2));
+            plotPixel(indices, width, height, x + dx, y + dy, bright * weight / 256);
+        }
+    }
+}
+
+namespace {
+
+void plot(std::uint8_t* indices, int width, int height, int x, int y, Ink ink) {
+    if (ink.soft) {
+        plotSoftSpot(indices, width, height, x, y, ink.bright);
+    } else {
+        plotPixel(indices, width, height, x, y, ink.bright);
+    }
+}
+
 // RenderWave waveform 1: one smoothed line, drawn with a max blend.
 // It reads the mono columns and stays on the frame center. Over mode 10's scroll the
 // original lowered it to three quarters of the height.
-void drawLine(std::uint8_t* indices, int width, int height, const AudioFrame& audio, int bright, int mode) {
+void drawLine(std::uint8_t* indices, int width, int height, const AudioFrame& audio, Ink ink, int mode) {
     const float amplitude = static_cast<float>(height) * kWaveFraction;
     const float yCenter = static_cast<float>(height) * (mode == 10 ? 0.75f : 0.5f);
     float previous = columnSample(audio.samples, 0, width) * amplitude + yCenter;
     for (int x = 0; x < width; ++x) {
         const float z = columnSample(audio.samples, x, width) * amplitude + yCenter;
         previous = previous * 0.9f + z * 0.1f;
-        plot(indices, width, height, x, static_cast<int>(previous), bright);
+        plot(indices, width, height, x, static_cast<int>(previous), ink);
     }
 }
 
@@ -150,7 +191,7 @@ void drawLine(std::uint8_t* indices, int width, int height, const AudioFrame& au
 // Intentional difference: each column uses that column's channel. The original
 // interleaved buffer repeated each stereo pair across two pixels.
 void drawTwoLines(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
-                  int bright, float centerYNorm) {
+                  Ink ink, float centerYNorm) {
     const float amplitude = static_cast<float>(height) * kWaveFraction * 0.7f;
     const float center = centerYNorm * static_cast<float>(height);
     const float upper = center - static_cast<float>(height) * 0.12f;
@@ -162,8 +203,8 @@ void drawTwoLines(std::uint8_t* indices, int width, int height, const AudioFrame
     for (int x = 0; x < width; ++x) {
         previousLeft = previousLeft * 0.9f + (columnSample(left, x, width) * amplitude + upper) * 0.1f;
         previousRight = previousRight * 0.9f + (columnSample(right, x, width) * amplitude + lower) * 0.1f;
-        plot(indices, width, height, x, static_cast<int>(previousLeft), bright);
-        plot(indices, width, height, x, static_cast<int>(previousRight), bright);
+        plot(indices, width, height, x, static_cast<int>(previousLeft), ink);
+        plot(indices, width, height, x, static_cast<int>(previousRight), ink);
     }
 }
 
@@ -172,7 +213,7 @@ void drawTwoLines(std::uint8_t* indices, int width, int height, const AudioFrame
 // Intentional difference: the original walks the first 314 frames of the capture buffer.
 // This frame is already one sample per column, so the 314 points cover that whole wave.
 void drawScope(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
-               int bright, float centerXNorm, float centerYNorm, float motionTime) {
+               Ink ink, float centerXNorm, float centerYNorm, float motionTime) {
     const float amplitude = static_cast<float>(height) * kWaveFraction * 1.2f;
     const float centerX = centerXNorm * static_cast<float>(width);
     const float centerY = centerYNorm * static_cast<float>(height);
@@ -189,27 +230,27 @@ void drawScope(std::uint8_t* indices, int width, int height, const AudioFrame& a
         py2 = py2 * 0.5f + 0.5f * columnSample(right, column, width) * amplitude;
         const float px = px2 * cosine + py2 * sine;
         const float py = px2 * -sine + py2 * cosine;
-        plot(indices, width, height, static_cast<int>(px + centerX), static_cast<int>(py + centerY), bright);
+        plot(indices, width, height, static_cast<int>(px + centerX), static_cast<int>(py + centerY), ink);
     }
 }
 
 // RenderWave waveform 3: one smoothed vertical line through the map center. Row y reads
 // the sample of column y, as the original read its buffer by row.
 void drawVerticalLine(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
-                      int bright, float centerXNorm) {
+                      Ink ink, float centerXNorm) {
     const float amplitude = static_cast<float>(height) * kWaveFraction;
     const float xCenter = centerXNorm * static_cast<float>(width);
     float previous = columnSample(audio.samples, 0, width) * amplitude + xCenter;
     for (int y = 0; y < height; ++y) {
         previous = previous * 0.9f + (columnSample(audio.samples, y, width) * amplitude + xCenter) * 0.1f;
-        plot(indices, width, height, static_cast<int>(previous), y, bright);
+        plot(indices, width, height, static_cast<int>(previous), y, ink);
     }
 }
 
 // RenderWave waveform 4: two smoothed diagonal lines at 0.9 of the line amplitude. Left
 // runs down from the top-left corner and right from width - height, both one pixel
 // across per row.
-void drawDiagonals(std::uint8_t* indices, int width, int height, const AudioFrame& audio, int bright) {
+void drawDiagonals(std::uint8_t* indices, int width, int height, const AudioFrame& audio, Ink ink) {
     const float amplitude = static_cast<float>(height) * kWaveFraction * 0.9f;
     const std::vector<float>& left = audio.left.empty() ? audio.samples : audio.left;
     const std::vector<float>& right = audio.right.empty() ? left : audio.right;
@@ -218,8 +259,8 @@ void drawDiagonals(std::uint8_t* indices, int width, int height, const AudioFram
     for (int y = 0; y < height; ++y) {
         previousLeft = previousLeft * 0.9f + columnSample(left, y, width) * amplitude * 0.1f;
         previousRight = previousRight * 0.9f + columnSample(right, y, width) * amplitude * 0.1f;
-        plot(indices, width, height, static_cast<int>(previousLeft) + y, y, bright);
-        plot(indices, width, height, static_cast<int>(previousRight) + y + (width - height), y, bright);
+        plot(indices, width, height, static_cast<int>(previousLeft) + y, y, ink);
+        plot(indices, width, height, static_cast<int>(previousRight) + y + (width - height), y, ink);
     }
 }
 
@@ -229,7 +270,7 @@ void drawDiagonals(std::uint8_t* indices, int width, int height, const AudioFram
 // Intentional difference: like waveform 6, the 364 points cover the whole column wave
 // instead of the first 364 frames of the capture buffer.
 void drawCircle(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
-                int bright, float centerXNorm, float centerYNorm) {
+                Ink ink, float centerXNorm, float centerYNorm) {
     const float amplitude = static_cast<float>(height) * kWaveFraction * 0.7f;
     const float toPixels = static_cast<float>(width) / 640.f;
     const float baseRadius = 60.f * toPixels;
@@ -239,7 +280,9 @@ void drawCircle(std::uint8_t* indices, int width, int height, const AudioFrame& 
     auto sampleAt = [&](int point) {
         return columnSample(audio.samples, point * (width - 1) / (span - 1), width);
     };
-    float radius = baseRadius + sampleAt(0) * amplitude;
+    // The original blended its buffer in place, so the smoother starts from the blended first
+    // point, which is point 314. Starting from the raw first point left a notch at the seam.
+    float radius = baseRadius + sampleAt(kCirclePoints) * amplitude;
     for (int i = 0; i < kCirclePoints; ++i) {
         float sample = sampleAt(i);
         if (i < kCircleBlend) {
@@ -252,30 +295,30 @@ void drawCircle(std::uint8_t* indices, int width, int height, const AudioFrame& 
         }
         const float angle = static_cast<float>(i) * 0.02f;
         plot(indices, width, height, static_cast<int>(centerX + radius * std::cos(angle)),
-             static_cast<int>(centerY + radius * std::sin(angle)), bright);
+             static_cast<int>(centerY + radius * std::sin(angle)), ink);
     }
 }
 
-void drawShape(std::uint8_t* indices, int width, int height, const AudioFrame& audio, int bright,
+void drawShape(std::uint8_t* indices, int width, int height, const AudioFrame& audio, Ink ink,
                int waveform, int mode, float centerXNorm, float centerYNorm, float motionTime) {
     switch (waveform) {
         case 2:
-            drawTwoLines(indices, width, height, audio, bright, centerYNorm);
+            drawTwoLines(indices, width, height, audio, ink, centerYNorm);
             break;
         case 3:
-            drawVerticalLine(indices, width, height, audio, bright, centerXNorm);
+            drawVerticalLine(indices, width, height, audio, ink, centerXNorm);
             break;
         case 4:
-            drawDiagonals(indices, width, height, audio, bright);
+            drawDiagonals(indices, width, height, audio, ink);
             break;
         case 5:
-            drawCircle(indices, width, height, audio, bright, centerXNorm, centerYNorm);
+            drawCircle(indices, width, height, audio, ink, centerXNorm, centerYNorm);
             break;
         case 6:
-            drawScope(indices, width, height, audio, bright, centerXNorm, centerYNorm, motionTime);
+            drawScope(indices, width, height, audio, ink, centerXNorm, centerYNorm, motionTime);
             break;
         default:
-            drawLine(indices, width, height, audio, bright, mode);
+            drawLine(indices, width, height, audio, ink, mode);
             break;
     }
 }
@@ -292,7 +335,7 @@ void drawWaveform(std::uint8_t* indices, int width, int height, const AudioFrame
     if (bright < 1) {
         return;
     }
-    drawShape(indices, width, height, audio, bright, waveform, mode, centerXNorm, centerYNorm, motionTime);
+    drawShape(indices, width, height, audio, Ink{bright, false}, waveform, mode, centerXNorm, centerYNorm, motionTime);
 }
 
 // The idle wave's signal at column position u (0...1) and time t. Left runs three slow
@@ -585,7 +628,8 @@ void Engine::drawIdleWave() {
         idleFrame_.samples[x] = 0.5f * (left + right);
     }
     const int waveform = effects_.hideWaveform ? 5 : waveform_;
-    drawShape(back_.data(), width_, height_, idleFrame_, bright, waveform, mapParameters_.mode,
+    // Soft spots: the idle wave is slow and faint, and sharp dots looked out of place on it.
+    drawShape(back_.data(), width_, height_, idleFrame_, Ink{bright, true}, waveform, mapParameters_.mode,
               mapParameters_.centerXNorm, mapParameters_.centerYNorm, t);
 }
 

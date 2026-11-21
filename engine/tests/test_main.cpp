@@ -1896,6 +1896,44 @@ geiss::FrameView tickSilence(geiss::Engine& engine, double seconds, double fps) 
     return frame;
 }
 
+// The circle starts its smoother from the blended first point, as the original did after
+// blending in place, so an odd first sample does not dent the ring at the seam.
+void testCircleSeam() {
+    constexpr int width = 160;
+    constexpr int height = 90;
+    geiss::Engine engine = engineDrawing(5, width, height);
+    geiss::AudioFrame audio = flatWave(width);
+    std::fill(audio.samples.begin(), audio.samples.end(), 0.5f);
+    audio.samples[0] = -1.f;
+    const geiss::FrameView frame = engine.tick(1.0 / 30.0, audio);
+    const float centerX = engine.map().centerXNorm * static_cast<float>(width);
+    const float centerY = engine.map().centerYNorm * static_cast<float>(height);
+    // Base radius 15 at 160 wide, plus half of the 22-pixel amplitude.
+    const float ring = 15.f + 0.5f * static_cast<float>(height) * 0.35f * 0.7f;
+    float nearest = 1e9f;
+    for (const auto& [x, y] : litPixels(frame)) {
+        nearest = std::min(nearest, std::hypot(static_cast<float>(x) - centerX, static_cast<float>(y) - centerY));
+    }
+    check(nearest > ring - 3.f, "the circle has no notch at its seam");
+}
+
+void testSoftSpot() {
+    constexpr int size = 9;
+    constexpr auto side = static_cast<std::size_t>(size);
+    Pixels pixels(side * side, 0);
+    auto at = [&](int x, int y) { return pixels[(static_cast<std::size_t>(y) * side) + static_cast<std::size_t>(x)]; };
+    geiss::plotSoftSpot(pixels.data(), size, size, 4, 4, 200);
+    check(at(4, 4) == 200, "a soft spot's center is the full index");
+    check(at(3, 4) == at(5, 4) && at(4, 3) == at(4, 5), "a soft spot is symmetric");
+    check(at(5, 4) > 100 && at(5, 4) < 200, "a soft spot's neighbors are dimmer");
+    check(at(6, 6) > 0 && at(6, 6) < at(5, 5), "a soft spot fades toward its corners");
+    check(at(7, 4) == 0 && at(4, 1) == 0, "a soft spot spans 5x5");
+    geiss::plotSoftSpot(pixels.data(), size, size, 4, 4, 50);
+    check(at(4, 4) == 200, "a soft spot keeps a brighter pixel");
+    geiss::plotSoftSpot(pixels.data(), size, size, 0, 0, 200);
+    check(at(0, 0) == 200 && at(1, 0) > 100, "a soft spot clips at the edges");
+}
+
 void testIdleWave() {
     geiss::Engine engine = engineDrawing(1, 160, 90);
     engine.setLocked(true);
@@ -1907,8 +1945,10 @@ void testIdleWave() {
     // A plain palette's highlight level is about its index, so this bounds the drawn index.
     check(maxAlpha(settled) <= 140, "the idle wave stays in the palette's lower half");
 
-    const std::vector<std::pair<int, int>> before = litPixels(settled);
-    const std::vector<std::pair<int, int>> after = litPixels(tickSilence(engine, 2.0, 30));
+    const std::size_t bytes = static_cast<std::size_t>(settled.width) * static_cast<std::size_t>(settled.height) * 4;
+    const std::vector<std::uint8_t> before(settled.rgba, settled.rgba + bytes);
+    const geiss::FrameView later = tickSilence(engine, 2.0, 30);
+    const std::vector<std::uint8_t> after(later.rgba, later.rgba + bytes);
     check(before != after, "the idle wave moves");
 
     engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
@@ -1991,6 +2031,8 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testEngineEffects();
     testNames();
     testSoundActive();
+    testCircleSeam();
+    testSoftSpot();
     testIdleWave();
     testWrapColumn();
     testBandsMatchSerial();
