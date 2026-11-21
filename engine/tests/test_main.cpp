@@ -1953,8 +1953,23 @@ void testIdleWave() {
     const std::vector<std::uint8_t> after(later.rgba, later.rgba + bytes);
     check(before != after, "the idle wave moves");
 
+    // Loud sound fades the idle wave out over half a second instead of cutting it.
     engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
-    check(engine.idleLevel() == 0.f, "sound replaces the idle wave at once");
+    check(engine.idleLevel() > 0.9f && engine.idleLevel() < 1.f, "sound starts fading the idle wave out");
+    for (int i = 0; i < 6; ++i) {
+        engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    }
+    const float fading = engine.idleLevel();
+    check(fading > 0.f && fading < 0.6f, "the idle wave is partway out after a quarter second of sound");
+    // Quiet returning mid-fade brings it back up at once, without the wait.
+    tickSilence(engine, 0.1, 30);
+    check(engine.idleLevel() > fading, "quiet during the fade brings the idle wave back without a wait");
+    for (int i = 0; i < 20; ++i) {
+        engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    }
+    check(engine.idleLevel() == 0.f, "sound has replaced the idle wave after half a second");
+    tickSilence(engine, 1.4, 30);
+    check(engine.idleLevel() == 0.f, "once gone, the idle wave waits again");
 
     geiss::Engine paused = engineDrawing(1, 160, 90);
     tickSilence(paused, 3.0, 30);
@@ -1998,8 +2013,20 @@ void testIdleWave() {
     }
     check(hushed.soundActive(), "faint sound still counts as sound for the effects");
     check(hushed.idleLevel() == 1.f, "faint sound that draws no waveform brings up the idle wave");
-    hushed.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
-    check(hushed.idleLevel() == 0.f, "a drawn waveform replaces the idle wave at once");
+
+    // Quiet sound that draws a line dimmer than the idle wave's darkest keeps the idle wave,
+    // so quiet music never looks darker than silence. Volume 8 draws at about 41.
+    geiss::AudioFrame quiet = beatFrame(false, 1.f, 0.f);
+    quiet.volume = 8.f;
+    quiet.averageVolume = 8.f;
+    for (int i = 0; i < 30; ++i) {
+        hushed.tick(1.0 / 30.0, quiet);
+    }
+    check(hushed.idleLevel() == 1.f, "quiet sound dimmer than the idle wave keeps it");
+    for (int i = 0; i < 30; ++i) {
+        hushed.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    }
+    check(hushed.idleLevel() == 0.f, "a line brighter than the idle wave replaces it");
 
     // Beat mode's dark gaps between hits do not count as faint.
     geiss::Engine beating = engineDrawing(1, 160, 90);

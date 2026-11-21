@@ -69,13 +69,20 @@ constexpr double kBigBeatRelaxSeconds = kMaxBeatWait;
 // picture faded to black. Here, once silence has lasted kIdleWaitSeconds, a made-up signal
 // rises over kIdleRiseSeconds and is drawn with the look's own waveform: the line becomes
 // a slow swell, two lines braid, the circle opens into a breathing flower, and the
-// oscilloscope traces a 3:2 Lissajous figure that slowly turns and morphs. Sound replaces
-// it at once. It stays in the palette's lower half, so it is calm and never glows on HDR.
+// oscilloscope traces a 3:2 Lissajous figure that slowly turns and morphs. It stays in the
+// palette's lower half, so it is calm and never glows on HDR.
 constexpr double kIdleWaitSeconds = 1.5;
 constexpr double kIdleRiseSeconds = 4.0;
 // Palette indices: the wave breathes between about 70 and 130 over kIdleBreathSeconds.
 constexpr float kIdleBright = 100.f;
 constexpr float kIdleBreath = 30.f;
+// The hand-off. Sound whose line would draw dimmer than the idle wave's darkest keeps the
+// idle wave, so quiet music never looks darker than silence; its faint line plays inside it.
+// Brighter sound fades the idle wave out over kIdleFadeSeconds instead of cutting it, and
+// while any of it is left, quiet brings it back up without the wait, so sound hovering
+// near the hand-off makes it dip instead of blinking off and on.
+constexpr float kIdleHandOff = kIdleBright - kIdleBreath;
+constexpr double kIdleFadeSeconds = 0.5;
 constexpr double kIdleBreathSeconds = 7.0;
 // The signal's size swells between 0.2 and 0.4 of a full-scale wave over kIdleSwellSeconds.
 constexpr float kIdleAmplitude = 0.3f;
@@ -565,9 +572,9 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
 
     soundActive_ = !audio.silent && !audio.samples.empty();
     silentSeconds_ = soundActive_ ? 0 : silentSeconds_ + dt;
-    // Sound too faint for the waveform to draw counts as quiet for the idle wave. The beat
+    // Sound whose line would draw dimmer than the idle wave counts as quiet for it. The beat
     // scale is left out, so the dark gaps between hits in beat mode do not bring it up.
-    const bool faint = !soundActive_ || waveBrightness(audio.volume, audio.averageVolume) < 1.f;
+    const bool faint = !soundActive_ || waveBrightness(audio.volume, audio.averageVolume) < kIdleHandOff;
     faintSeconds_ = faint ? faintSeconds_ + dt : 0;
     if (!locked_) {
         mapElapsed_ += dt;
@@ -614,13 +621,17 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
 }
 
 void Engine::updateIdle(double dt) {
-    if (faintSeconds_ <= 0 || !idleWaveEnabled_) {
+    if (!idleWaveEnabled_) {
         idleLevel_ = 0;
         return;
     }
+    if (faintSeconds_ <= 0) {
+        idleLevel_ = std::max(idleLevel_ - dt / kIdleFadeSeconds, 0.0);
+        return;
+    }
     // faintSeconds_ already includes this tick. Only the part of it past the wait counts, so
-    // the rise keeps the same pace at any frame rate.
-    const double pastWait = std::min(dt, faintSeconds_ - kIdleWaitSeconds);
+    // the rise keeps the same pace at any frame rate. An idle wave still fading out skips it.
+    const double pastWait = idleLevel_ > 0 ? dt : std::min(dt, faintSeconds_ - kIdleWaitSeconds);
     if (pastWait > 0) {
         idleLevel_ = std::min(idleLevel_ + pastWait / kIdleRiseSeconds, 1.0);
     }
