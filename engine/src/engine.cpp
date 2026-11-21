@@ -38,6 +38,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 
 namespace geiss {
 namespace {
@@ -421,25 +422,27 @@ void Engine::nextVisual() {
 }
 
 void Engine::rebuildMap() {
-    buildMap(map_, width_, height_, mapParameters_);
+    buildMap(map_, width_, height_, mapParameters_, bands_);
 }
 
 void Engine::expandPalette(const std::uint8_t* indices) {
     const std::size_t count = static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
     // From the palette as drawn, so the levels follow a blend. The palette only changes while
-    // it blends or on a new pick, so the levels are rebuilt then and reused otherwise.
-    if (palette_ != levelsPalette_) {
+    // it blends or on a new pick, so the table is rebuilt then and reused otherwise.
+    if (!lookupBuilt_ || palette_ != levelsPalette_) {
         levelsPalette_ = palette_;
-        levels_ = highlightLevels(palette_);
+        lookupBuilt_ = true;
+        const HighlightLevels levels = highlightLevels(palette_);
+        for (std::size_t n = 0; n < rgbaLookup_.size(); ++n) {
+            rgbaLookup_[n] = {palette_[n * 3], palette_[n * 3 + 1], palette_[n * 3 + 2], levels[n]};
+        }
     }
-    const HighlightLevels& levels = levels_;
+    // One four-byte copy per pixel, which compiles to a single store.
+    std::uint8_t* out = rgba_.data();
     for (std::size_t i = 0; i < count; ++i) {
-        const std::size_t index = static_cast<std::size_t>(indices[i]) * 3;
-        rgba_[i * 4] = palette_[index];
-        rgba_[i * 4 + 1] = palette_[index + 1];
-        rgba_[i * 4 + 2] = palette_[index + 2];
-        rgba_[i * 4 + 3] = levels[indices[i]];
+        std::memcpy(out + i * 4, rgbaLookup_[indices[i]].data(), 4);
     }
+    frameChanged_ = true;
 }
 
 FrameView Engine::tick(double dt, const AudioFrame& audio) {
@@ -447,10 +450,10 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     view.rgba = rgba_.data();
     view.width = width_;
     view.height = height_;
-    if (width_ < 2 || height_ < 2) {
-        return view;
-    }
-    if (paused_) {
+    if (width_ < 2 || height_ < 2 || paused_) {
+        // A resize or a new palette while paused still changes the pixels once.
+        view.changed = frameChanged_;
+        frameChanged_ = false;
         return view;
     }
     if (dt < 0) {
@@ -493,13 +496,14 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
                       mapParameters_.centerYNorm * static_cast<float>(height_), dt * kReferenceFps, audio);
     // The original added slider1 to the source pointer once per frame, whatever the map's damping.
     warpIndices(front_.data(), back_.data(), width_, height_, map_.data(), step, decay,
-                slideShift_.x() * frameStep, slideShift_.y() * frameStep, ++ditherSeed_);
+                slideShift_.x() * frameStep, slideShift_.y() * frameStep, ++ditherSeed_, bands_);
     if (!effects_.hideWaveform) {
         drawWaveform(back_.data(), width_, height_, audio, waveform_, mapParameters_.mode, mapParameters_.centerXNorm,
                      mapParameters_.centerYNorm, static_cast<float>(motionTime_));
     }
     expandPalette(back_.data());
     front_.swap(back_);
+    frameChanged_ = false;
     return view;
 }
 

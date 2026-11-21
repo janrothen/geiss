@@ -32,20 +32,22 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import QuartzCore
 import SwiftUI
 
 struct VisualizerView: View {
     @ObservedObject var model: VisualizerModel
     @State private var controlsVisible = true
     @State private var hideTask: Task<Void, Never>?
+    @State private var lastReveal: CFTimeInterval = 0
 
     private let amber = Color(red: 0.90, green: 0.63, blue: 0.36)
 
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .bottom) {
-                MetalScreen(presenter: model.presenter) { date in
-                    model.tick(to: date, viewSize: geo.size)
+                MetalScreen(presenter: model.presenter, lowRate: model.paused) { time in
+                    model.tick(at: time, viewSize: geo.size)
                 }
                 .ignoresSafeArea()
                 if let info = model.info {
@@ -77,11 +79,8 @@ struct VisualizerView: View {
                 revealControls()
             }
             .onAppear {
-                model.tick(to: .now, viewSize: geo.size)
+                model.tick(at: CACurrentMediaTime(), viewSize: geo.size)
                 revealControls()
-            }
-            .onChange(of: geo.size) { _, _ in
-                model.tick(to: .now, viewSize: geo.size)
             }
         }
         .focusable()
@@ -173,6 +172,11 @@ struct VisualizerView: View {
     }
 
     private func revealControls() {
+        // The pointer reports every move. While the bar is showing, restarting its timer a few
+        // times a second is enough, rather than starting a task per event.
+        let now = CACurrentMediaTime()
+        guard !controlsVisible || now - lastReveal >= 0.25 else { return }
+        lastReveal = now
         controlsVisible = true
         hideTask?.cancel()
         hideTask = Task {

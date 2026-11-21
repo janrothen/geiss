@@ -37,6 +37,8 @@
 #include "geiss/audio.hpp"
 #include "geiss/engine.hpp"
 
+#include <dispatch/dispatch.h>
+
 #include <memory>
 
 @interface GeissLookInfo ()
@@ -44,6 +46,28 @@
 - (instancetype)initWithEngine:(const geiss::Engine &)engine NS_DESIGNATED_INITIALIZER;
 
 @end
+
+namespace {
+
+struct BandCall {
+    void* job;
+    geiss::BandRunner::Band band;
+};
+
+void runBand(void* context, size_t index) {
+    const auto& call = *static_cast<const BandCall*>(context);
+    call.band(call.job, static_cast<int>(index));
+}
+
+// Spreads the engine's row bands over the cores. dispatch_apply returns once every band is done,
+// and the calling main thread takes a share of them.
+void runBandsConcurrently(void* /*host*/, int count, void* job, geiss::BandRunner::Band band) {
+    BandCall call{job, band};
+    dispatch_apply_f(static_cast<size_t>(count), dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), &call,
+                     runBand);
+}
+
+}  // namespace
 
 @implementation GeissLookInfo
 
@@ -87,6 +111,7 @@
     self = [super init];
     if (self != nil) {
         engine_ = std::make_unique<geiss::Engine>(seed);
+        engine_->setBandRunner(geiss::BandRunner{runBandsConcurrently, nullptr});
         gain_ = 1;
     }
     return self;
@@ -130,8 +155,11 @@
     return [[GeissLookInfo alloc] initWithEngine:*engine_];
 }
 
-- (const uint8_t *)tick:(double)dt width:(int *)width height:(int *)height {
+- (const uint8_t *)tick:(double)dt width:(int *)width height:(int *)height changed:(BOOL *)changed {
     const geiss::FrameView view = engine_->tick(dt, frame_);
+    if (changed != nullptr) {
+        *changed = view.changed ? YES : NO;
+    }
     if (width != nullptr) {
         *width = view.width;
     }

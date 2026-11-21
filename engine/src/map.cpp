@@ -64,18 +64,6 @@ namespace {
 // The original tuned modes 1...16 in pixels on a 640-wide frame (rmult = 640 / FXW).
 constexpr float kReferenceWidth = 640.f;
 
-float wrapX(float value, int width) {
-    const float span = static_cast<float>(width - 1);
-    if (span <= 0.f) {
-        return 0.f;
-    }
-    float wrapped = std::fmod(value, span);
-    if (wrapped < 0.f) {
-        wrapped += span;
-    }
-    return wrapped;
-}
-
 // cos and sin of a turn. The turns are fixed for a whole map, so buildMap computes them once.
 struct Rotation {
     float cosine = 1;
@@ -453,35 +441,73 @@ SourcePoint mapSource(int x, int y, int width, int height, const MapParameters& 
     return sourceAt(x, y, width, height, map, rotationsFor(map));
 }
 
-void buildMap(std::vector<SourcePoint>& out, int width, int height, const MapParameters& map) {
-    const Rotations rotations = rotationsFor(map);
-    out.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            out[static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)] =
-                sourceAt(x, y, width, height, map, rotations);
+float wrapColumn(float value, int width) {
+    const float span = static_cast<float>(width - 1);
+    if (span <= 0.f) {
+        return 0.f;
+    }
+    // Nearly every source column is already in range. fmod costs about a third of the warp,
+    // so it runs only for the few that are not, and gives the same result for the rest.
+    if (value >= 0.f && value < span) {
+        return value;
+    }
+    float wrapped = std::fmod(value, span);
+    if (wrapped < 0.f) {
+        wrapped += span;
+    }
+    return wrapped;
+}
+
+namespace {
+
+struct BuildJob {
+    SourcePoint* out;
+    int width;
+    int height;
+    int count;
+    const MapParameters* map;
+    const Rotations* rotations;
+};
+
+void buildBand(void* context, int index) {
+    const auto& job = *static_cast<const BuildJob*>(context);
+    const int last = bandFirstRow(index + 1, job.count, job.height);
+    for (int y = bandFirstRow(index, job.count, job.height); y < last; ++y) {
+        for (int x = 0; x < job.width; ++x) {
+            job.out[static_cast<std::size_t>(y) * static_cast<std::size_t>(job.width) + static_cast<std::size_t>(x)] =
+                sourceAt(x, y, job.width, job.height, *job.map, *job.rotations);
         }
     }
 }
 
-void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
-                 const SourcePoint* map, float step, float decay, float shiftX, float shiftY,
-                 std::uint32_t ditherSeed) {
-    if (width < 2 || height < 2 || src == nullptr || dst == nullptr || map == nullptr) {
-        return;
-    }
-    step = std::clamp(step, 0.f, 1.f);
-    decay = std::clamp(decay, 0.f, 1.f);
-    const float maxY = static_cast<float>(height - 1);
+struct WarpJob {
+    const std::uint8_t* src;
+    std::uint8_t* dst;
+    int width;
+    int height;
+    int count;
+    const SourcePoint* map;
+    float step;
+    float decay;
+    float shiftX;
+    float shiftY;
+    std::uint32_t ditherSeed;
+};
 
-    for (int y = 0; y < height; ++y) {
+void warpBand(void* context, int index) {
+    const auto& job = *static_cast<const WarpJob*>(context);
+    const int width = job.width;
+    const int height = job.height;
+    const float maxY = static_cast<float>(height - 1);
+    const int last = bandFirstRow(index + 1, job.count, height);
+    for (int y = bandFirstRow(index, job.count, height); y < last; ++y) {
         for (int x = 0; x < width; ++x) {
-            const std::size_t index = static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
-            const SourcePoint target = map[index];
+            const std::size_t pixel = static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x);
+            const SourcePoint target = job.map[pixel];
             // Columns wrap around, as the original's newx did (newx += FXW-1 while below 0),
             // so maps that read past the side edges pull in the opposite edge. Rows clamp.
-            const float sx = wrapX(static_cast<float>(x) + (target.x - static_cast<float>(x)) * step + shiftX, width);
-            float sy = static_cast<float>(y) + (target.y - static_cast<float>(y)) * step + shiftY;
+            const float sx = wrapColumn(static_cast<float>(x) + (target.x - static_cast<float>(x)) * job.step + job.shiftX, width);
+            float sy = static_cast<float>(y) + (target.y - static_cast<float>(y)) * job.step + job.shiftY;
             sy = std::clamp(sy, 0.f, maxY);
 
             const int x0 = std::clamp(static_cast<int>(sx), 0, width - 1);
@@ -491,21 +517,46 @@ void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int heig
             const float fx = std::clamp(sx - static_cast<float>(x0), 0.f, 1.f);
             const float fy = std::clamp(sy - static_cast<float>(y0), 0.f, 1.f);
 
+            const std::uint8_t* src = job.src;
             const float p00 = src[static_cast<std::size_t>(y0) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x0)];
             const float p10 = src[static_cast<std::size_t>(y0) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x1)];
             const float p01 = src[static_cast<std::size_t>(y1) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x0)];
             const float p11 = src[static_cast<std::size_t>(y1) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x1)];
             const float top = p00 * (1.f - fx) + p10 * fx;
             const float bottom = p01 * (1.f - fx) + p11 * fx;
-            float value = (top * (1.f - fy) + bottom * fy) * decay;
+            float value = (top * (1.f - fy) + bottom * fy) * job.decay;
             value = std::clamp(value, 0.f, 255.f);
             // Intentional difference: the original truncated its weighted sum, which at 30 fps
             // took about one level off every frame. Plain rounding would keep a small
             // per-frame darkening from ever landing at high frame rates, so trails would stop
             // fading. Random rounding keeps the expected value at any frame rate.
-            dst[index] = static_cast<std::uint8_t>(std::min(value + ditherThreshold(x, y, ditherSeed), 255.f));
+            job.dst[pixel] = static_cast<std::uint8_t>(std::min(value + ditherThreshold(x, y, job.ditherSeed), 255.f));
         }
     }
+}
+
+}  // namespace
+
+void buildMap(std::vector<SourcePoint>& out, int width, int height, const MapParameters& map,
+              const BandRunner& bands) {
+    const Rotations rotations = rotationsFor(map);
+    out.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    if (width < 1 || height < 1) {
+        return;
+    }
+    BuildJob job{out.data(), width, height, bandCount(height), &map, &rotations};
+    bands(job.count, &job, buildBand);
+}
+
+void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
+                 const SourcePoint* map, float step, float decay, float shiftX, float shiftY,
+                 std::uint32_t ditherSeed, const BandRunner& bands) {
+    if (width < 2 || height < 2 || src == nullptr || dst == nullptr || map == nullptr) {
+        return;
+    }
+    WarpJob job{src, dst, width, height, bandCount(height), map, std::clamp(step, 0.f, 1.f),
+                std::clamp(decay, 0.f, 1.f), shiftX, shiftY, ditherSeed};
+    bands(job.count, &job, warpBand);
 }
 
 float ditherThreshold(int x, int y, std::uint32_t seed) {

@@ -35,11 +35,13 @@
 #pragma once
 
 #include "geiss/audio.hpp"
+#include "geiss/bands.hpp"
 #include "geiss/effects.hpp"
 #include "geiss/map.hpp"
 #include "geiss/palette.hpp"
 #include "geiss/shift.hpp"
 
+#include <array>
 #include <cstdint>
 
 namespace geiss {
@@ -69,6 +71,9 @@ struct FrameView {
     const std::uint8_t* rgba = nullptr;
     int width = 0;
     int height = 0;
+    // False when the pixels are the same as the previous view's, for example while paused,
+    // so a presenter can skip the upload.
+    bool changed = true;
 };
 
 // Index-buffer feedback picture. Metal receives only the RGBA view.
@@ -80,6 +85,8 @@ public:
     void setPaused(bool paused);
     void setLocked(bool locked);
     void nextVisual();
+    // Lets the host warp and build maps on several threads. The picture is the same either way.
+    void setBandRunner(const BandRunner& bands) { bands_ = bands; }
 
     bool paused() const { return paused_; }
     bool locked() const { return locked_; }
@@ -134,9 +141,14 @@ private:
     Palette targetPalette_{};
     // Seconds left in the blend from `fromPalette_` to `targetPalette_`.
     double paletteBlendLeft_ = 0;
-    // The highlight levels of `levelsPalette_`, rebuilt only when the drawn palette changes.
+    // RGBA8 for each index of `levelsPalette_`: its color and its highlight level. Rebuilt
+    // only when the drawn palette changes.
     Palette levelsPalette_{};
-    HighlightLevels levels_{};
+    std::array<std::array<std::uint8_t, 4>, 256> rgbaLookup_{};
+    bool lookupBuilt_ = false;
+    // Whether `rgba_` changed since the last view was returned.
+    bool frameChanged_ = true;
+    BandRunner bands_{};
     MapParameters mapParameters_{};
     Random random_;
     EffectSet effects_{};
