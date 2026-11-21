@@ -58,6 +58,17 @@ struct Look {
     int waveform = 1;
 };
 
+// Max-blends a soft 5x5 spot centered on (x, y) into an index buffer: `bright` at the center,
+// about two thirds of it beside, falling to a twentieth at the corners. Clipped at the edges.
+// The idle wave draws its points this way, so points up to about three pixels apart, such as
+// the circle's at a large radius, run together into a soft line instead of a row of dots.
+void plotSoftSpot(std::uint8_t* indices, int width, int height, int x, int y, int bright);
+
+// radiansPerSecond * seconds, worked out in double and wrapped to within one turn of zero
+// (keeping its sign) before narrowing to float. The idle wave's drift uses it, so its motion
+// stays smooth however long the engine has run.
+float wrappedPhase(double radiansPerSecond, double seconds);
+
 // False for the map and waveform pairs the original re-rolls, and for unknown numbers.
 bool lookAllowed(int mode, int waveform);
 
@@ -100,6 +111,12 @@ public:
     void setSlideShiftAllowed(bool allowed) { slideShift_.startLook(allowed); }
     // Whether the latest unpaused tick had sound. The effects rest while it is false.
     bool soundActive() const { return soundActive_; }
+    // The idle wave: in silence, or sound too faint to draw the waveform, after a short wait,
+    // a faint made-up signal drawn with the look's waveform keeps the picture moving. 0 while
+    // the waveform draws, rising to 1.
+    float idleLevel() const { return static_cast<float>(idleLevel_); }
+    // On by default. A host that wants the picture to fade out in silence turns it off.
+    void setIdleWave(bool enabled) { idleWaveEnabled_ = enabled; }
     int width() const { return width_; }
 
     // Replaces the current look's effects, and rebuilds the map when mode 5 depends on
@@ -125,6 +142,8 @@ private:
     void pickPalette(bool blend);
     bool soundEmpty() const;
     void expandPalette(const std::uint8_t* indices);
+    void updateIdle(double dt);
+    void drawIdleWave();
 
     int width_ = 0;
     int height_ = 0;
@@ -160,6 +179,14 @@ private:
     bool soundActive_ = false;
     // Seconds of unbroken silence. A palette picked after a long silence is brighter.
     double silentSeconds_ = 0;
+    // Seconds the live waveform has had nothing to draw: silence, or sound too faint for it.
+    // The idle wave waits on this.
+    double faintSeconds_ = 0;
+    bool idleWaveEnabled_ = true;
+    // 0 with sound, rising to 1 after the idle wait. See `idleLevel`.
+    double idleLevel_ = 0;
+    // The idle wave's made-up signal, one value per column, refilled each tick it draws.
+    AudioFrame idleFrame_{};
     std::vector<SourcePoint> map_;
     std::vector<std::uint8_t> front_;
     std::vector<std::uint8_t> back_;

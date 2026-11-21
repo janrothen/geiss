@@ -1852,6 +1852,8 @@ void testEngineEffects() {
 double silentFade(double fps) {
     geiss::Engine engine = engineShowing(25, 160, 90);
     engine.setLocked(true);
+    // The fade itself, without the idle wave that rises over it.
+    engine.setIdleWave(false);
     const geiss::AudioFrame loud = beatFrame(false, 1.f, 0.f);
     for (int i = 0; i < static_cast<int>(2 * fps); ++i) {
         engine.tick(1.0 / fps, loud);
@@ -1874,6 +1876,149 @@ void testSilenceFadesAtAnyFrameRate() {
     check(silentFade(30) < 1.0, "the picture fades out in silence at 30 fps");
     check(silentFade(60) < 1.0, "the picture fades out in silence at 60 fps");
     check(silentFade(120) < 1.0, "the picture fades out in silence at 120 fps");
+}
+
+unsigned maxAlpha(const geiss::FrameView& frame) {
+    unsigned highest = 0;
+    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        highest = std::max<unsigned>(highest, frame.rgba[i * 4 + 3]);
+    }
+    return highest;
+}
+
+// Ticks `seconds` of silence at `fps` and returns the last frame.
+geiss::FrameView tickSilence(geiss::Engine& engine, double seconds, double fps) {
+    geiss::FrameView frame{};
+    for (int i = 0; i < static_cast<int>(seconds * fps); ++i) {
+        frame = engine.tick(1.0 / fps, quietFrame());
+    }
+    return frame;
+}
+
+// The circle starts its smoother from the blended first point, as the original did after
+// blending in place, so an odd first sample does not dent the ring at the seam.
+void testCircleSeam() {
+    constexpr int width = 160;
+    constexpr int height = 90;
+    geiss::Engine engine = engineDrawing(5, width, height);
+    geiss::AudioFrame audio = flatWave(width);
+    std::fill(audio.samples.begin(), audio.samples.end(), 0.5f);
+    audio.samples[0] = -1.f;
+    const geiss::FrameView frame = engine.tick(1.0 / 30.0, audio);
+    const float centerX = engine.map().centerXNorm * static_cast<float>(width);
+    const float centerY = engine.map().centerYNorm * static_cast<float>(height);
+    // Base radius 15 at 160 wide, plus half of the 22-pixel amplitude.
+    const float ring = 15.f + 0.5f * static_cast<float>(height) * 0.35f * 0.7f;
+    float nearest = 1e9f;
+    for (const auto& [x, y] : litPixels(frame)) {
+        nearest = std::min(nearest, std::hypot(static_cast<float>(x) - centerX, static_cast<float>(y) - centerY));
+    }
+    check(nearest > ring - 3.f, "the circle has no notch at its seam");
+}
+
+void testSoftSpot() {
+    constexpr int size = 9;
+    constexpr auto side = static_cast<std::size_t>(size);
+    Pixels pixels(side * side, 0);
+    auto at = [&](int x, int y) { return pixels[(static_cast<std::size_t>(y) * side) + static_cast<std::size_t>(x)]; };
+    geiss::plotSoftSpot(pixels.data(), size, size, 4, 4, 200);
+    check(at(4, 4) == 200, "a soft spot's center is the full index");
+    check(at(3, 4) == at(5, 4) && at(4, 3) == at(4, 5), "a soft spot is symmetric");
+    check(at(5, 4) > 100 && at(5, 4) < 200, "a soft spot's neighbors are dimmer");
+    check(at(6, 6) > 0 && at(6, 6) < at(5, 5), "a soft spot fades toward its corners");
+    check(at(7, 4) == 0 && at(4, 1) == 0, "a soft spot spans 5x5");
+    geiss::plotSoftSpot(pixels.data(), size, size, 4, 4, 50);
+    check(at(4, 4) == 200, "a soft spot keeps a brighter pixel");
+    geiss::plotSoftSpot(pixels.data(), size, size, 0, 0, 200);
+    check(at(0, 0) == 200 && at(1, 0) > 100, "a soft spot clips at the edges");
+}
+
+void testIdleWave() {
+    geiss::Engine engine = engineDrawing(1, 160, 90);
+    engine.setLocked(true);
+    tickSilence(engine, 1.4, 30);
+    check(engine.idleLevel() == 0.f, "the idle wave waits through the first 1.4 s of silence");
+    tickSilence(engine, 0.2, 30);
+    check(engine.idleLevel() > 0.f && engine.idleLevel() < 0.05f, "the idle wave starts rising after 1.5 s of silence");
+    const geiss::FrameView settled = tickSilence(engine, 8.0, 30);
+    check(engine.idleLevel() == 1.f, "the idle wave has risen after about six seconds of silence");
+    check(litPixels(settled).size() > 160, "silence keeps a moving picture");
+    // A plain palette's highlight level is about its index, so this bounds the drawn index.
+    check(maxAlpha(settled) <= 140, "the idle wave stays in the palette's lower half");
+
+    const std::size_t bytes = static_cast<std::size_t>(settled.width) * static_cast<std::size_t>(settled.height) * 4;
+    const std::vector<std::uint8_t> before(settled.rgba, settled.rgba + bytes);
+    const geiss::FrameView later = tickSilence(engine, 2.0, 30);
+    const std::vector<std::uint8_t> after(later.rgba, later.rgba + bytes);
+    check(before != after, "the idle wave moves");
+
+    engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    check(engine.idleLevel() == 0.f, "sound replaces the idle wave at once");
+
+    geiss::Engine paused = engineDrawing(1, 160, 90);
+    tickSilence(paused, 3.0, 30);
+    const float held = paused.idleLevel();
+    paused.setPaused(true);
+    tickSilence(paused, 2.0, 30);
+    check(paused.idleLevel() == held, "pause holds the idle wave");
+
+    geiss::Engine off = engineDrawing(1, 160, 90);
+    off.setIdleWave(false);
+    check(litPixels(tickSilence(off, 10.0, 30)).empty(), "with the idle wave off, silence fades to black");
+
+    // A nuclide look hides its waveform, and its rings rest in silence, so the idle wave
+    // draws the circle instead of leaving the picture dark.
+    geiss::Engine nuclide = engineDrawing(1, 160, 90);
+    nuclide.setLocked(true);
+    nuclide.setEffects(only(geiss::Effect::Nuclide));
+    check(!litPixels(tickSilence(nuclide, 8.0, 30)).empty(), "a nuclide look keeps an idle wave");
+
+    geiss::Engine slow = engineDrawing(1, 160, 90);
+    geiss::Engine fast = engineDrawing(1, 160, 90);
+    tickSilence(slow, 3.0, 30);
+    tickSilence(fast, 3.0, 120);
+    checkNear(slow.idleLevel(), fast.idleLevel(), 0.01f, "the idle wave rises at the same pace at any frame rate");
+    // At 12.5 fps a tick that crosses the wait only counts the part past it: 18 ticks reach
+    // 1.44 s, and the next ends 0.02 s past the wait.
+    geiss::Engine coarse = engineDrawing(1, 160, 90);
+    for (int i = 0; i < 19; ++i) {
+        coarse.tick(0.08, quietFrame());
+    }
+    checkNear(coarse.idleLevel(), 0.02f / 4.f, 0.002f, "a tick across the idle wait counts only the time past it");
+
+    // Sound too faint for the waveform to draw brings the idle wave up as silence does.
+    geiss::AudioFrame faint = beatFrame(false, 1.f, 0.f);
+    faint.volume = 1.f;
+    faint.averageVolume = 1.f;
+    geiss::Engine hushed = engineDrawing(1, 160, 90);
+    hushed.setLocked(true);
+    for (int i = 0; i < 9 * 30; ++i) {
+        hushed.tick(1.0 / 30.0, faint);
+    }
+    check(hushed.soundActive(), "faint sound still counts as sound for the effects");
+    check(hushed.idleLevel() == 1.f, "faint sound that draws no waveform brings up the idle wave");
+    hushed.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    check(hushed.idleLevel() == 0.f, "a drawn waveform replaces the idle wave at once");
+
+    // Beat mode's dark gaps between hits do not count as faint.
+    geiss::Engine beating = engineDrawing(1, 160, 90);
+    for (int i = 0; i < 3 * 30; ++i) {
+        beating.tick(1.0 / 30.0, beatFrame(true, 0.f, 0.f));
+    }
+    check(beating.idleLevel() == 0.f, "beat mode's dark gaps keep the idle wave down");
+
+}
+
+// The idle wave's phases wrap in double, so they still advance one 120 Hz frame at a time
+// after a week of running, when a float clock would only change every few frames.
+void testWrappedPhase() {
+    constexpr double week = 7.0 * 24.0 * 3600.0;
+    const float now = geiss::wrappedPhase(0.31, week);
+    const float next = geiss::wrappedPhase(0.31, week + 1.0 / 120.0);
+    checkNear(next - now, 0.31f / 120.f, 0.0005f, "an idle phase advances smoothly after a week");
+    check(std::fabs(now) < 6.2832f, "an idle phase wraps to one turn");
+    check(geiss::wrappedPhase(-0.17, 100.0) <= 0.f, "a backward idle phase stays negative");
 }
 
 }  // namespace
@@ -1928,6 +2073,10 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testEngineEffects();
     testNames();
     testSoundActive();
+    testCircleSeam();
+    testSoftSpot();
+    testIdleWave();
+    testWrappedPhase();
     testWrapColumn();
     testBandsMatchSerial();
     testFrameChanged();
