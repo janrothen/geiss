@@ -112,10 +112,14 @@ final class VisualizerModel: ObservableObject {
         case .silence:
             return "QUIET"
         case .system:
-            if case .running = capture {
+            switch capture {
+            case .running:
                 return "LIVE"
+            case .silenced:
+                return "NO AUDIO"
+            case .starting, .failed:
+                return "WAIT"
             }
-            return "WAIT"
         }
     }
 
@@ -309,12 +313,7 @@ final class VisualizerModel: ObservableObject {
     }
 
     private func ingestSystem(dt: Double, time: Double) {
-        let running: Bool
-        if case .running = capture {
-            running = true
-        } else {
-            running = false
-        }
+        let running = capture.isCapturing
         if running, let snap = tap.latest(into: &captureBuffer), snap.sequence != lastSequence {
             lastSequence = snap.sequence
             lastCaptureTime = time

@@ -77,6 +77,9 @@ final class SampleRing: @unchecked Sendable {
         var storedFrames = 0
         var sequence: UInt64 = 0
         var layout = Layout()
+        /// Whether any sample since `configure` was not exactly zero. A tap without permission
+        /// delivers only exact zeros.
+        var heardSound = false
     }
 
     private let capacityFrames: Int
@@ -108,6 +111,7 @@ final class SampleRing: @unchecked Sendable {
         state.pointee.layout = layout
         state.pointee.writeFrame = 0
         state.pointee.storedFrames = 0
+        state.pointee.heardSound = false
         os_unfair_lock_unlock(lock)
     }
 
@@ -117,6 +121,7 @@ final class SampleRing: @unchecked Sendable {
         state.pointee.layout = Layout()
         state.pointee.writeFrame = 0
         state.pointee.storedFrames = 0
+        state.pointee.heardSound = false
         os_unfair_lock_unlock(lock)
     }
 
@@ -124,6 +129,13 @@ final class SampleRing: @unchecked Sendable {
         os_unfair_lock_lock(lock)
         defer { os_unfair_lock_unlock(lock) }
         return state.pointee.sequence
+    }
+
+    /// Whether the current tap has delivered any sample that is not exactly zero.
+    func heardSound() -> Bool {
+        os_unfair_lock_lock(lock)
+        defer { os_unfair_lock_unlock(lock) }
+        return state.pointee.heardSound
     }
 
     /// IO thread. Converts to interleaved stereo straight into the ring.
@@ -156,15 +168,20 @@ final class SampleRing: @unchecked Sendable {
         // Keep only the newest frames when one block is larger than the ring.
         let start = max(0, frames - capacityFrames)
         var writeFrame = state.pointee.writeFrame
+        var heard = state.pointee.heardSound
         for frame in start..<frames {
-            samples[writeFrame * 2] = left[frame * stride]
-            samples[writeFrame * 2 + 1] = right[frame * stride]
+            let leftSample = left[frame * stride]
+            let rightSample = right[frame * stride]
+            samples[writeFrame * 2] = leftSample
+            samples[writeFrame * 2 + 1] = rightSample
+            heard = heard || leftSample != 0 || rightSample != 0
             writeFrame += 1
             if writeFrame == capacityFrames {
                 writeFrame = 0
             }
         }
         state.pointee.writeFrame = writeFrame
+        state.pointee.heardSound = heard
         state.pointee.storedFrames = min(capacityFrames, state.pointee.storedFrames + frames - start)
         state.pointee.sequence &+= 1
     }

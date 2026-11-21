@@ -51,14 +51,16 @@ Copyright (c) 1998-2022 Ryan Geiss. The picture engine and this app are licensed
 
 | What you see | What to do |
 |---|---|
-| The window stays black | Wait a moment, or press Resume if the picture is paused. |
+| The window stays black | Wait a moment, or press Resume if the picture is paused. With no sound the picture fades to black; play some sound. If it stays black while music plays, Geiss lacks permission: see the next rows. |
 | The info readout shows far fewer frames per second than the display's rate | Rebuild with the command above. Both build configurations compile the engine with optimization; an unoptimized engine manages only about 30 fps at 960 wide. |
 | The picture looks stretched or soft while resizing | Expected. The simulation keeps its size until the window has stayed still for a moment, then sharpens. |
 | The info readout shows about 15 fps | The picture is paused. Press Space to resume at the display's rate. |
 | The waveform does not move | The Mac is quiet, or Visual > Silence is selected. Play some sound, or choose Visual > Tone. |
 | The line vanishes between beats | That is beat mode with a steady bass beat. It returns on each hit and stays steady in quieter or beatless music. |
 | Nothing glows on an HDR display | Press I. "off (screen reaches …)" means the screen's headroom is below 2.5 times; "no headroom now" means it is at full brightness. Lower the brightness a little, or turn off a fixed reference mode. |
-| Geiss cannot hear this Mac | Choose Open System Settings and allow Geiss under System Audio Recording. Return to the window. A local rebuild can ask again. |
+| Geiss cannot hear this Mac | Choose Open System Settings and turn on Geiss under **System Audio Recording Only** (not the list above it). Then click back into Geiss; it picks up the change without a relaunch, so answer macOS's Quit & Reopen prompt with Later. |
+| Geiss is not listed under System Audio Recording Only | macOS lists an app only after it was allowed, or when it runs from an Applications folder. Copy `Geiss.app` to `~/Applications` and open it from there, or add it with +. To see the first-launch prompt again, run `tccutil reset AudioCapture`. |
+| "Geiss cannot hear this Mac" shows although permission is on | An app is keeping its output open while silent, such as a paused player. The message clears when sound plays. |
 | Playback stops while Geiss is open | Quit Geiss. The tap is meant to leave playback running. |
 | `xcodebuild` cannot find Metal | Build on an Apple Silicon Mac with Xcode, for the `arm64` destination above. |
 | The engine tests fail to configure | Use CMake 3.20 or newer and run the commands from the repository root. |

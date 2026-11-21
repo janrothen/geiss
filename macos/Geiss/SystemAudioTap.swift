@@ -39,6 +39,9 @@ import os
 enum CaptureStatus: Equatable {
     case starting
     case running
+    /// The tap runs but delivers only exact zeros while another app plays sound. That is how a
+    /// tap without permission behaves: macOS creates it without an error and sends silence.
+    case silenced
     case failed(OSStatus)
 
     var isFailed: Bool {
@@ -46,6 +49,11 @@ enum CaptureStatus: Equatable {
             return true
         }
         return false
+    }
+
+    /// Whether the tap is delivering callbacks, heard or not.
+    var isCapturing: Bool {
+        self == .running || self == .silenced
     }
 }
 
@@ -56,6 +64,9 @@ final class SystemAudioTap {
     /// A running tap that delivers no callbacks for this long is restarted. A restart that
     /// cannot create the tap again, for example after permission is revoked, reports a failure.
     private static let stallSeconds: UInt64 = 3
+    /// A tap that has heard only exact zeros while another app plays sound for this many
+    /// watchdog ticks, about a second each, is reported as silenced.
+    private static let silencedTicks = 3
 
     private let queue = DispatchQueue(label: "com.janrothen.geiss.tap")
     private let queueKey = DispatchSpecificKey<UInt8>()
@@ -72,6 +83,7 @@ final class SystemAudioTap {
     private var watchdog: DispatchSourceTimer?
     private var watchedSequence: UInt64 = 0
     private var stalledSince: UInt64?
+    private var zeroTicks = 0
     private var activated = false
 
     init() {
@@ -158,13 +170,14 @@ final class SystemAudioTap {
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler { [weak self] in
             self?.checkStall()
+            self?.checkSilenced()
         }
         timer.resume()
         watchdog = timer
     }
 
     private func checkStall() {
-        guard procID != nil, status == .running else {
+        guard procID != nil, status.isCapturing else {
             stalledSince = nil
             return
         }
@@ -186,9 +199,38 @@ final class SystemAudioTap {
         }
     }
 
+    /// Permission applies when a tap is created: a running tap keeps the permission it started
+    /// with. So a silenced tap is only rebuilt, here or on a device change, never waited on.
+    private func checkSilenced() {
+        guard procID != nil, status.isCapturing else {
+            zeroTicks = 0
+            return
+        }
+        if ring.heardSound() {
+            zeroTicks = 0
+            if status == .silenced { publish(.running) }
+            return
+        }
+        guard status == .running else { return }
+        guard AudioProcesses.otherProcessPlaysSound() else {
+            zeroTicks = 0
+            return
+        }
+        zeroTicks += 1
+        if zeroTicks >= Self.silencedTicks {
+            log.error("the tap hears only silence while another app plays sound; permission is probably off")
+            publish(.silenced)
+        }
+    }
+
+    /// Coming back to Geiss, for example from System Settings, retries a failed tap and rebuilds
+    /// a silenced one, so a permission turned on there applies without a relaunch.
     private func retryIfNeeded() {
         queue.async {
-            if self.procID == nil {
+            if self.status == .silenced {
+                self.stopLocked()
+                self.startLocked()
+            } else if self.procID == nil {
                 self.startLocked()
             }
         }
@@ -199,8 +241,12 @@ final class SystemAudioTap {
             return
         }
         stalledSince = nil
-        // A retry after a failure keeps the overlay up until the tap is running again.
-        if !status.isFailed {
+        zeroTicks = 0
+        // A retry after a failure, or a rebuild of a silenced tap, keeps the overlay up until
+        // the tap is running again, or, when silenced, until it hears sound.
+        let keepOverlay = status.isFailed || status == .silenced
+        let wasSilenced = status == .silenced
+        if !keepOverlay {
             publish(.starting)
         }
         guard let uid = Self.defaultOutputUID() else {
@@ -208,26 +254,12 @@ final class SystemAudioTap {
             return
         }
 
-        let description = CATapDescription(excludingProcesses: [], deviceUID: uid, stream: 0)
-        description.name = "Geiss"
-        description.muteBehavior = .unmuted
-        description.isPrivate = true
-
         var newTap: AudioObjectID = 0
-        var accepted = description
-        var status = AudioHardwareCreateProcessTap(description, &newTap)
+        let (created, accepted) = createTap(deviceUID: uid, into: &newTap)
+        var status = created
         if status != noErr {
-            log.error("device tap failed \(status) \(Self.fourCC(status), privacy: .public)")
-            let global = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
-            global.name = "Geiss"
-            global.muteBehavior = .unmuted
-            global.isPrivate = true
-            status = AudioHardwareCreateProcessTap(global, &newTap)
-            if status != noErr {
-                fail(status, "process tap")
-                return
-            }
-            accepted = global
+            fail(status, "process tap")
+            return
         }
         tapID = newTap
 
@@ -264,7 +296,25 @@ final class SystemAudioTap {
             return
         }
         log.info("capturing \(uid, privacy: .public) at \(stream.mSampleRate, format: .fixed(precision: 0)) Hz")
-        publish(.running)
+        publish(wasSilenced ? .silenced : .running)
+    }
+
+    /// Tries a tap of the device's mix first, then one global stereo tap.
+    private func createTap(deviceUID: String, into newTap: inout AudioObjectID) -> (OSStatus, CATapDescription) {
+        let description = CATapDescription(excludingProcesses: [], deviceUID: deviceUID, stream: 0)
+        description.name = "Geiss"
+        description.muteBehavior = .unmuted
+        description.isPrivate = true
+        let status = AudioHardwareCreateProcessTap(description, &newTap)
+        if status == noErr {
+            return (status, description)
+        }
+        log.error("device tap failed \(status) \(Self.fourCC(status), privacy: .public)")
+        let global = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        global.name = "Geiss"
+        global.muteBehavior = .unmuted
+        global.isPrivate = true
+        return (AudioHardwareCreateProcessTap(global, &newTap), global)
     }
 
     private func stopLocked() {
@@ -407,4 +457,43 @@ private func geissTapIOProc(
     guard let clientData else { return noErr }
     Unmanaged<SampleRing>.fromOpaque(clientData).takeUnretainedValue().write(inputData)
     return noErr
+}
+
+enum AudioProcesses {
+    /// Whether a process other than Geiss is sending audio to an output device. The tap's own
+    /// aggregate device is input, so it does not count.
+    static func otherProcessPlaysSound() -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else {
+            return false
+        }
+        var processes = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &processes) == noErr else {
+            return false
+        }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        for process in processes.prefix(Int(size) / MemoryLayout<AudioObjectID>.size) {
+            var pid: pid_t = 0
+            var pidSize = UInt32(MemoryLayout<pid_t>.size)
+            address.mSelector = kAudioProcessPropertyPID
+            guard AudioObjectGetPropertyData(process, &address, 0, nil, &pidSize, &pid) == noErr,
+                  pid != ownPID
+            else {
+                continue
+            }
+            var running: UInt32 = 0
+            var runningSize = UInt32(MemoryLayout<UInt32>.size)
+            address.mSelector = kAudioProcessPropertyIsRunningOutput
+            if AudioObjectGetPropertyData(process, &address, 0, nil, &runningSize, &running) == noErr, running != 0 {
+                return true
+            }
+        }
+        return false
+    }
 }
