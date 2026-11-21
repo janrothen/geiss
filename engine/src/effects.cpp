@@ -46,10 +46,10 @@ constexpr double kFloatFramesPerFrame = 1.6;
 // The original's effect sizes are for a 640-wide frame.
 constexpr float kReferenceWidth = 640.f;
 
-// The original's seven live effects. Spectral dots, neutrons, and crystals come after them.
+// The original's seven live effects. Spectral dots and crystals come after them.
 constexpr std::size_t kOriginalEffects = 7;
-// This port's weight for spectral dots, neutrons, and crystals on every map. The original
-// gave them none: spectral dots had weight 0, and the other two were commented out.
+// This port's weight for spectral dots and crystals on every map. The original gave them
+// none: spectral dots had weight 0, and crystals were commented out.
 constexpr int kAddedEffectWeight = 100;
 
 struct BaseMode {
@@ -115,7 +115,7 @@ bool hasSound(const AudioFrame& audio) { return !audio.silent && !audio.samples.
 
 const char* effectName(Effect effect) {
     static constexpr std::array<const char*, kEffectCount> kNames = {
-        "Chasers", "Bar", "Dots", "Solar", "Grid", "Nuclide", "Shade bobs", "Spectral dots", "Neutrons", "Crystals",
+        "Chasers", "Bar", "Dots", "Solar", "Grid", "Nuclide", "Shade bobs", "Spectral dots", "Crystals",
     };
     const auto index = static_cast<std::size_t>(effect);
     if (index >= kNames.size()) {
@@ -134,7 +134,6 @@ ModeEffects modeEffects(int mode) {
     ModeEffects info;
     std::copy(base.weights.begin(), base.weights.end(), info.weights.begin());
     info.weights[slot(Effect::Spectral)] = kAddedEffectWeight;
-    info.weights[slot(Effect::Neutrons)] = kAddedEffectWeight;
     info.weights[slot(Effect::Crystals)] = kAddedEffectWeight;
     info.solarMax = base.solarMax;
     info.centerDwindle = base.centerDwindle;
@@ -305,9 +304,6 @@ void EffectLayer::draw(std::uint8_t* indices, int width, int height, const Effec
     }
     if (effects.has(Effect::Crystals)) {
         crystals(canvas, steps);
-    }
-    if (effects.has(Effect::Neutrons)) {
-        neutrons(canvas, steps);
     }
     if (effects.has(Effect::Solar)) {
         solar(canvas, info.solarMax, frames);
@@ -592,21 +588,6 @@ void EffectLayer::drawSpectral(const Canvas& canvas, float strength) {
         const float x = 64.f * std::cos(p * 0.00451f + n * 99.f + 3.f) + 51.f * std::cos(p * 0.00572f + n * 13.f + 7.f);
         const float y = 51.f * std::cos(p * 0.00502f + n * 78.f + 8.f) + 45.f * std::cos(p * 0.00653f + n * 17.f + 5.f);
         disc(canvas, static_cast<int>(canvas.centerX + s * x), static_cast<int>(canvas.centerY + s * y), radius, strength);
-    }
-}
-
-// Neutrons: on every third frame, one time in three, a full soft disc lands anywhere at least
-// 20 pixels (at 640 wide) inside the frame.
-void EffectLayer::neutrons(const Canvas& canvas, int steps) {
-    const auto first = static_cast<long long>(std::floor(clock_)) - steps + 1;
-    const int margin = static_cast<int>(20.f * canvas.scale);
-    for (int step = 0; step < steps; ++step) {
-        if ((first + step) % 3 != 0 || random_.below(3) != 0) {
-            continue;
-        }
-        const int x = margin + random_.below(std::max(1, canvas.width - 2 * margin));
-        const int y = margin + random_.below(std::max(1, canvas.height - 2 * margin));
-        disc(canvas, x, y, 10.f, 1.f);
     }
 }
 

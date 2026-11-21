@@ -1510,10 +1510,9 @@ void testModeEffectsTable() {
     bool added = true;
     for (int mode = geiss::kFirstMapMode; mode <= geiss::kLastMapMode; ++mode) {
         const geiss::ModeEffects info = geiss::modeEffects(mode);
-        added = added && at(info, Effect::Spectral) == 100 && at(info, Effect::Neutrons) == 100 &&
-                at(info, Effect::Crystals) == 100;
+        added = added && at(info, Effect::Spectral) == 100 && at(info, Effect::Crystals) == 100;
     }
-    check(added, "spectral dots, neutrons, and crystals have weight 100 on every map");
+    check(added, "spectral dots and crystals have weight 100 on every map");
     check(geiss::modeHasEdges(6) && !geiss::modeHasEdges(5) && !geiss::modeHasEdges(25), "only mode 6 draws edges");
     check(std::string(geiss::effectName(Effect::Spectral)) == "Spectral dots" &&
               std::string(geiss::effectName(Effect::Crystals)) == "Crystals",
@@ -1893,36 +1892,12 @@ void testSpectralDots() {
     }
 }
 
-void testNeutronsCrystalsAndEdges() {
+void testCrystalsAndEdges() {
     using geiss::Effect;
     constexpr int width = 320;
     constexpr int height = 240;
     constexpr float scale = width / 640.f;
     const geiss::AudioFrame sound = beatFrame(false, 1.f, 0.f);
-
-    const Pixels neutrons = runEffects(only(Effect::Neutrons), 25, width, height, 90, 1, sound);
-    check(litCount(neutrons) > 0, "neutrons land");
-    check(*std::max_element(neutrons.begin(), neutrons.end()) > 200, "a neutron is a full disc");
-    bool inside = true;
-    for (std::size_t i = 0; i < neutrons.size(); ++i) {
-        const int x = static_cast<int>(i) % width;
-        const int y = static_cast<int>(i) / width;
-        const int margin = static_cast<int>(20.f * scale) - 6;
-        if (neutrons[i] > 0) {
-            inside = inside && x >= margin && y >= margin && x < width - margin && y < height - margin;
-        }
-    }
-    check(inside, "neutrons land inside the frame's margin");
-    int neutronFrames = 0;
-    geiss::EffectLayer layer(4);
-    Pixels pixels(static_cast<std::size_t>(width) * height, 0);
-    const geiss::EffectSet neutronsOnly = only(Effect::Neutrons);
-    for (int i = 0; i < 2700; ++i) {
-        std::fill(pixels.begin(), pixels.end(), 0);
-        layer.draw(pixels.data(), width, height, neutronsOnly, 25, width / 2.f, height / 2.f, 1.0, sound);
-        neutronFrames += litCount(pixels) > 0 ? 1 : 0;
-    }
-    check(neutronFrames > 230 && neutronFrames < 370, "a neutron lands about one frame in nine");
 
     const Pixels crystal = runEffects(only(Effect::Crystals), 25, width, height, 1, 1, sound);
     bool floor150 = litCount(crystal) > 0;
@@ -2361,7 +2336,7 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testEachEffectDraws();
     testNuclide();
     testSpectralDots();
-    testNeutronsCrystalsAndEdges();
+    testCrystalsAndEdges();
     testSpectrumBands();
     testCenterDwindle();
     testMode5FollowsNuclide();

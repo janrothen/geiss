@@ -43,10 +43,11 @@
 namespace geiss {
 
 // The original's layered effects (Effects.h), in its effect[] order. Spectral dots were the
-// original's eighth slot, with weight 0 on every map; neutrons and crystals were commented out.
-// Those three have weights of this port's own.
-enum class Effect : std::uint8_t { Chasers, Bar, Dots, Solar, Grid, Nuclide, Shade, Spectral, Neutrons, Crystals };
-constexpr int kEffectCount = 10;
+// original's eighth slot, with weight 0 on every map; crystals were commented out. Those two
+// have weights of this port's own. The original's commented-out neutrons are left out (user
+// decision).
+enum class Effect : std::uint8_t { Chasers, Bar, Dots, Solar, Grid, Nuclide, Shade, Spectral, Crystals };
+constexpr int kEffectCount = 9;
 
 // The effect's name from docs/glossary.md.
 const char* effectName(Effect effect);
@@ -132,7 +133,6 @@ private:
     void spectral(const Canvas& canvas, int steps, double frames, const AudioFrame& audio);
     void advanceSpectral(const AudioFrame& audio);
     void drawSpectral(const Canvas& canvas, float strength);
-    void neutrons(const Canvas& canvas, int steps);
     void crystals(const Canvas& canvas, int steps);
     void edges(const Canvas& canvas);
     void diminishCenter(const Canvas& canvas, int mode, float dwindle, int steps);
