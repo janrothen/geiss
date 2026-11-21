@@ -185,7 +185,7 @@ The index buffer is unchanged, and each look picks a palette from the original's
 - Use the existing C++ style only inside preserved legacy files. Use current Swift conventions for new app code. New C++ is a modern portable subset.
 - Keep platform APIs at the edges: capture, the bridge, and SwiftUI.
 - Name the original function a ported routine follows. Note intentional visual differences beside that code.
-- Handle resize, sleep and wake, output-device changes, and permission changes without leaking the tap or jumping the simulation clock. A new simulation size applies once the window has held it for 0.15 s, so a live resize or a fullscreen animation does not rebuild the map and the textures every frame; until then the current picture is stretched to the window. The first size applies at once.
+- Handle resize, sleep and wake, output-device changes, and permission changes without leaking the tap or jumping the simulation clock. A new simulation size applies once the window has held it for 0.15 s, so a live resize or a fullscreen animation does not rebuild the map and the textures every frame; until then the current picture is stretched to the window. While the window opens, sizes apply at once for the first 0.15 s, so a provisional first layout, such as a restored frame or a launch into fullscreen, does not leave a stretched picture; a view that has not been laid out yet is skipped. Whether 0.15 s covers a launch into fullscreen is checked by eye.
 
 ## Distribution and rights
 

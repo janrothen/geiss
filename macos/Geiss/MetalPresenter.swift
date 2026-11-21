@@ -100,7 +100,7 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         view.enableSetNeedsDisplay = false
         view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         if texture != nil {
-            view.draw()
+            redraw()
         }
     }
 
@@ -110,10 +110,22 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     func present(pixels: UnsafePointer<UInt8>, width: Int, height: Int, changed: Bool) {
         guard width > 0, height > 0 else { return }
         if !changed, let texture, texture.width == width, texture.height == height {
-            view?.draw()
+            redraw()
             return
         }
         upload(pixels: pixels, width: width, height: height)
+    }
+
+    /// Draws the last texture again. The draw holds a slot like an upload does, so every command
+    /// buffer that reads a texture counts against `inFlight`. The queue finishes its buffers in
+    /// order, so once an upload gets a slot, every draw from before the previous two uploads has
+    /// finished, and the texture the rotation reuses is no longer being read.
+    private func redraw() {
+        guard let view else { return }
+        inFlight.wait()
+        slotHeld = true
+        view.draw()
+        releaseSlot()
     }
 
     private func upload(pixels: UnsafePointer<UInt8>, width: Int, height: Int) {

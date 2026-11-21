@@ -86,6 +86,8 @@ final class VisualizerModel: ObservableObject {
     /// A new size waits here until the view has held it for `resizeSettleSeconds`.
     private var pendingSize: SimulationSize?
     private var pendingSince: CFTimeInterval = 0
+    /// When the first size applied. Sizes apply at once for `resizeSettleSeconds` after it.
+    private var openedAt: CFTimeInterval?
     /// Room for the longest tick, so silence never reallocates.
     private var silenceBuffer = [Float](repeating: 0, count: VisualizerModel.maxSilenceFrames * 2)
     private var captureBuffer: [Float] = []
@@ -165,7 +167,10 @@ final class VisualizerModel: ObservableObject {
 
     /// `time` is when this frame will be shown, on the `CACurrentMediaTime` clock.
     func tick(at time: CFTimeInterval, viewSize: CGSize) {
-        applySize(Self.simulationSize(for: viewSize), at: time)
+        // A view that has not been laid out yet has no size worth building a simulation for.
+        if viewSize.width >= 1, viewSize.height >= 1 {
+            applySize(Self.simulationSize(for: viewSize), at: time)
+        }
 
         let dt = cappedDelta(to: time)
         switch preview {
@@ -199,8 +204,14 @@ final class VisualizerModel: ObservableObject {
             pendingSize = nil
             return
         }
-        // The first size applies at once, so the window opens on a sharp picture.
-        if simSize != nil {
+        // Sizes apply at once while the window opens, so it starts on a sharp picture even when
+        // its first layout is provisional, such as a restored frame or a launch into fullscreen.
+        guard let openedAt else {
+            openedAt = time
+            apply(size)
+            return
+        }
+        if time - openedAt >= Self.resizeSettleSeconds {
             if size != pendingSize {
                 pendingSize = size
                 pendingSince = time
@@ -208,6 +219,10 @@ final class VisualizerModel: ObservableObject {
             }
             guard time - pendingSince >= Self.resizeSettleSeconds else { return }
         }
+        apply(size)
+    }
+
+    private func apply(_ size: SimulationSize) {
         simSize = size
         pendingSize = nil
         bridge.resizeWidth(Int32(size.width), height: Int32(size.height))
