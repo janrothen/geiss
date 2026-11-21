@@ -67,6 +67,9 @@ final class SystemAudioTap {
     /// A tap that has heard only exact zeros while another app plays sound for this many
     /// watchdog ticks, about a second each, is reported as silenced.
     private static let silencedTicks = 3
+    /// Coming back to the app rebuilds a silenced tap at most this often, so switching
+    /// between apps does not keep tearing down and recreating Core Audio devices.
+    private static let rebuildSeconds: UInt64 = 5
 
     private let queue = DispatchQueue(label: "com.janrothen.geiss.tap")
     private let queueKey = DispatchSpecificKey<UInt8>()
@@ -84,6 +87,7 @@ final class SystemAudioTap {
     private var watchedSequence: UInt64 = 0
     private var stalledSince: UInt64?
     private var zeroTicks = 0
+    private var lastSilencedRebuild: UInt64?
     private var activated = false
 
     init() {
@@ -211,11 +215,13 @@ final class SystemAudioTap {
             if status == .silenced { publish(.running) }
             return
         }
-        guard status == .running else { return }
         guard AudioProcesses.otherProcessPlaysSound() else {
+            // Nothing else is playing, so silence is expected and says nothing about permission.
             zeroTicks = 0
+            if status == .silenced { publish(.running) }
             return
         }
+        guard status == .running else { return }
         zeroTicks += 1
         if zeroTicks >= Self.silencedTicks {
             log.error("the tap hears only silence while another app plays sound; permission is probably off")
@@ -228,6 +234,11 @@ final class SystemAudioTap {
     private func retryIfNeeded() {
         queue.async {
             if self.status == .silenced {
+                let now = DispatchTime.now().uptimeNanoseconds
+                if let last = self.lastSilencedRebuild, now - last < Self.rebuildSeconds * NSEC_PER_SEC {
+                    return
+                }
+                self.lastSilencedRebuild = now
                 self.stopLocked()
                 self.startLocked()
             } else if self.procID == nil {
@@ -457,43 +468,4 @@ private func geissTapIOProc(
     guard let clientData else { return noErr }
     Unmanaged<SampleRing>.fromOpaque(clientData).takeUnretainedValue().write(inputData)
     return noErr
-}
-
-enum AudioProcesses {
-    /// Whether a process other than Geiss is sending audio to an output device. The tap's own
-    /// aggregate device is input, so it does not count.
-    static func otherProcessPlaysSound() -> Bool {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyProcessObjectList,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let system = AudioObjectID(kAudioObjectSystemObject)
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else {
-            return false
-        }
-        var processes = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &processes) == noErr else {
-            return false
-        }
-        let ownPID = ProcessInfo.processInfo.processIdentifier
-        for process in processes.prefix(Int(size) / MemoryLayout<AudioObjectID>.size) {
-            var pid: pid_t = 0
-            var pidSize = UInt32(MemoryLayout<pid_t>.size)
-            address.mSelector = kAudioProcessPropertyPID
-            guard AudioObjectGetPropertyData(process, &address, 0, nil, &pidSize, &pid) == noErr,
-                  pid != ownPID
-            else {
-                continue
-            }
-            var running: UInt32 = 0
-            var runningSize = UInt32(MemoryLayout<UInt32>.size)
-            address.mSelector = kAudioProcessPropertyIsRunningOutput
-            if AudioObjectGetPropertyData(process, &address, 0, nil, &runningSize, &running) == noErr, running != 0 {
-                return true
-            }
-        }
-        return false
-    }
 }

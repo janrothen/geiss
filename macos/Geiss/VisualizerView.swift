@@ -144,15 +144,17 @@ struct VisualizerView: View {
 
     private func captureOverlay(_ capture: CaptureStatus) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Geiss cannot hear this Mac.")
             if case .failed(let status) = capture {
+                Text("Geiss cannot hear this Mac.")
                 Text(SystemAudioTap.statusText(status))
                     .foregroundStyle(amber)
             } else {
                 // A tap without permission is created without an error and hears only silence.
+                // An app that keeps its output open while silent looks the same, so this hedges.
+                Text("Geiss may not be able to hear this Mac.")
                 Text(
-                    "Other apps are playing, but Geiss hears only silence.\n"
-                        + "Turn on Geiss under System Audio Recording Only, then come back."
+                    "An app has audio output open, but Geiss hears only silence.\n"
+                        + "If sound is playing, turn on Geiss under System Audio Recording Only, then come back."
                 )
                     .foregroundStyle(amber)
                     .fixedSize(horizontal: false, vertical: true)
