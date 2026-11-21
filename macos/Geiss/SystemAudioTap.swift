@@ -64,9 +64,11 @@ final class SystemAudioTap {
     /// A running tap that delivers no callbacks for this long is restarted. A restart that
     /// cannot create the tap again, for example after permission is revoked, reports a failure.
     private static let stallSeconds: UInt64 = 3
-    /// A tap that has heard only exact zeros while another app plays sound for this many
-    /// watchdog ticks, about a second each, is reported as silenced.
-    private static let silencedTicks = 3
+    /// A tap that has heard only exact zeros for this long while another app plays sound is
+    /// reported as silenced. A tap with permission hears a playing app within a few callbacks.
+    private static let silencedSeconds: UInt64 = 2
+    /// How often the watchdog checks for a stalled or silenced tap.
+    private static let watchdogMilliseconds = 500
     /// Coming back to the app rebuilds a silenced tap at most this often, so switching
     /// between apps does not keep tearing down and recreating Core Audio devices.
     private static let rebuildSeconds: UInt64 = 5
@@ -86,7 +88,7 @@ final class SystemAudioTap {
     private var watchdog: DispatchSourceTimer?
     private var watchedSequence: UInt64 = 0
     private var stalledSince: UInt64?
-    private var zeroTicks = 0
+    private var zeroSince: UInt64?
     private var lastSilencedRebuild: UInt64?
     private var activated = false
 
@@ -112,8 +114,9 @@ final class SystemAudioTap {
         }
     }
 
-    func restart() {
+    func restart(_ reason: String) {
         queue.async {
+            self.log.notice("rebuilding the tap: \(reason, privacy: .public)")
             self.stopLocked()
             self.startLocked()
         }
@@ -132,7 +135,7 @@ final class SystemAudioTap {
             mElement: kAudioObjectPropertyElementMain
         )
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.restart()
+            self?.restart("default output changed")
         }
         let status = AudioObjectAddPropertyListenerBlock(
             AudioObjectID(kAudioObjectSystemObject),
@@ -151,7 +154,7 @@ final class SystemAudioTap {
             self?.stop()
         })
         observerTokens.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { [weak self] _ in
-            self?.restart()
+            self?.restart("wake")
         })
         observerTokens.append(NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -171,7 +174,8 @@ final class SystemAudioTap {
 
     private func startWatchdog() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 1, repeating: 1)
+        let interval = DispatchTimeInterval.milliseconds(Self.watchdogMilliseconds)
+        timer.schedule(deadline: .now() + interval, repeating: interval)
         timer.setEventHandler { [weak self] in
             self?.checkStall()
             self?.checkSilenced()
@@ -207,23 +211,33 @@ final class SystemAudioTap {
     /// with. So a silenced tap is only rebuilt, here or on a device change, never waited on.
     private func checkSilenced() {
         guard procID != nil, status.isCapturing else {
-            zeroTicks = 0
+            zeroSince = nil
             return
         }
         if ring.heardSound() {
-            zeroTicks = 0
-            if status == .silenced { publish(.running) }
+            zeroSince = nil
+            if status == .silenced {
+                log.notice("the tap hears sound again")
+                publish(.running)
+            }
             return
         }
         guard AudioProcesses.otherProcessPlaysSound() else {
             // Nothing else is playing, so silence is expected and says nothing about permission.
-            zeroTicks = 0
-            if status == .silenced { publish(.running) }
+            zeroSince = nil
+            if status == .silenced {
+                log.notice("no other app plays sound; clearing the silenced state")
+                publish(.running)
+            }
             return
         }
         guard status == .running else { return }
-        zeroTicks += 1
-        if zeroTicks >= Self.silencedTicks {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard let since = zeroSince else {
+            zeroSince = now
+            return
+        }
+        if now - since >= Self.silencedSeconds * NSEC_PER_SEC {
             log.error("the tap hears only silence while another app plays sound; permission is probably off")
             publish(.silenced)
         }
@@ -239,6 +253,7 @@ final class SystemAudioTap {
                     return
                 }
                 self.lastSilencedRebuild = now
+                self.log.notice("rebuilding the silenced tap on return")
                 self.stopLocked()
                 self.startLocked()
             } else if self.procID == nil {
@@ -252,7 +267,7 @@ final class SystemAudioTap {
             return
         }
         stalledSince = nil
-        zeroTicks = 0
+        zeroSince = nil
         // A retry after a failure, or a rebuild of a silenced tap, keeps the overlay up until
         // the tap is running again, or, when silenced, until it hears sound.
         let keepOverlay = status.isFailed || status == .silenced
@@ -306,7 +321,7 @@ final class SystemAudioTap {
             fail(status, "device start")
             return
         }
-        log.info("capturing \(uid, privacy: .public) at \(stream.mSampleRate, format: .fixed(precision: 0)) Hz")
+        log.notice("capturing \(uid, privacy: .public) at \(stream.mSampleRate, format: .fixed(precision: 0)) Hz")
         publish(wasSilenced ? .silenced : .running)
     }
 
@@ -362,7 +377,29 @@ final class SystemAudioTap {
         }
     }
 
-    private static func createAggregate(tapUID: String, into aggregateID: inout AudioObjectID) -> OSStatus {
+    deinit {
+        // Stop first: the IO proc points at `ring`, which is released with this object.
+        stop()
+        watchdog?.cancel()
+        if let listener {
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &listenerAddress,
+                queue,
+                listener
+            )
+        }
+        let workspace = NSWorkspace.shared.notificationCenter
+        for token in observerTokens {
+            workspace.removeObserver(token)
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+}
+
+// Core Audio helpers, outside the class body to keep it short.
+extension SystemAudioTap {
+    fileprivate static func createAggregate(tapUID: String, into aggregateID: inout AudioObjectID) -> OSStatus {
         let aggregate: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Geiss Capture",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
@@ -376,7 +413,7 @@ final class SystemAudioTap {
         return AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &aggregateID)
     }
 
-    private static func inputFormat(of device: AudioObjectID, into stream: inout AudioStreamBasicDescription) -> OSStatus {
+    fileprivate static func inputFormat(of device: AudioObjectID, into stream: inout AudioStreamBasicDescription) -> OSStatus {
         var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamFormat,
@@ -386,7 +423,7 @@ final class SystemAudioTap {
         return AudioObjectGetPropertyData(device, &address, 0, nil, &size, &stream)
     }
 
-    private static func defaultOutputUID() -> String? {
+    fileprivate static func defaultOutputUID() -> String? {
         var device = AudioDeviceID()
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         var address = AudioObjectPropertyAddress(
@@ -436,24 +473,6 @@ final class SystemAudioTap {
         return String(status)
     }
 
-    deinit {
-        // Stop first: the IO proc points at `ring`, which is released with this object.
-        stop()
-        watchdog?.cancel()
-        if let listener {
-            AudioObjectRemovePropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject),
-                &listenerAddress,
-                queue,
-                listener
-            )
-        }
-        let workspace = NSWorkspace.shared.notificationCenter
-        for token in observerTokens {
-            workspace.removeObserver(token)
-            NotificationCenter.default.removeObserver(token)
-        }
-    }
 }
 
 private func geissTapIOProc(
