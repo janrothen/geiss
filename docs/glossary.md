@@ -1,6 +1,6 @@
 # Glossary
 
-Names and short descriptions of the macOS visualizer's 25 maps and 7 layered effects. Each description follows the engine code (`engine/src/map.cpp` and `engine/src/effects.cpp`). The exact formulas and every intentional difference from the original are in the [spec](spec/macos-port.md#prototype-milestone).
+Names and short descriptions of the macOS visualizer's 25 maps and 9 layered effects. Each description follows the engine code (`engine/src/map.cpp` and `engine/src/effects.cpp`). The exact formulas and every intentional difference from the original are in the [spec](spec/macos-port.md#prototype-milestone).
 
 ## Reading the map descriptions
 
@@ -21,7 +21,7 @@ Some details apply to every map:
 | 3 | Terra-landing | The scale depends on the row: 0.95 at the center row, smaller below it, larger above it. The lower part rushes outward while the upper part drifts slowly in, like flying low over the ground. It moves at full speed. |
 | 4 | Sphere | The scale is 0.9 at the center and rises with distance, passing 1 at about 286 pixels. Inside that radius the picture swells outward. Outside it, the picture pulls in. The picture gathers into a bulging ball. |
 | 5 | Super-perspective | The scale starts just under 1 at the center and falls with the square root of the distance. The center barely moves while the edges rush outward, which gives a deep sense of perspective. When the look has the nuclide effect, the scale falls in a straight line with distance instead, so the edges rush out even faster. |
-| 6 | Vortex field | Five randomly placed push centers each either push in a fixed direction or swirl one way or the other. Each pixel follows the centers nearest to it most strongly. The total move is normalized to 1.9 pixels per frame, plus a small constant drift. It has no overall zoom. It never pairs with the circle waveform. |
+| 6 | Vortex field | Five randomly placed push centers each either push in a fixed direction or swirl one way or the other. Each pixel follows the centers nearest to it most strongly. The total move is normalized to 1.9 pixels per frame, plus a small constant drift. It has no overall zoom. It never pairs with the circle waveform. While there is sound it also draws faint noise along its top and bottom edges (see Edges below). |
 | 7 | Fuzzy | An outward zoom that is faster toward the edges, with a fixed random jitter of up to 0.05 added to each pixel's scale. The jitter smears the picture into a grainy, fuzzy texture. |
 | 8 | Ripples | The scale swings between 0.75 and 0.95 with the sine of the square root of the distance. The result is concentric bands that zoom out at different speeds, so the picture ripples. The ripple frequency is random and usually low. |
 | 9 | Flower petals | The pixels form a checkerboard. Half of them zoom out gently, faster toward the edges. The other half use one fixed scale of 0.8…1.05. Both turn the same way. The two interleaved zooms feed back into each other and grow petal and flower shapes. |
@@ -44,7 +44,7 @@ Some details apply to every map:
 
 ## Layered effects
 
-Effects draw into the previous frame before the warp, so the map smears them into trails. They draw only while there is sound and rest in silence. Each look picks its effects with the map's weights. Most maps allow one or two at a time. Positions are around the map center, and sizes are for a 640-wide frame.
+Effects draw into the previous frame before the warp, so the map smears them into trails. They draw only while there is sound and rest in silence, except the nuclide's random rings. Each look picks its effects with the map's weights. Most maps allow one or two at a time. Positions are around the map center, and sizes are for a 640-wide frame.
 
 | Effect | What it does |
 |---|---|
@@ -53,8 +53,11 @@ Effects draw into the previous frame before the warp, so the map smears them int
 | Dots | A slow point keeps its last 20 positions as a trail of dots. Each dot keeps the brightness it had when it was placed, which cycles with time. Each frame the trail is redrawn and every dot shifts one pixel to the right. |
 | Solar | Particles land within 35 pixels of the center. Each adds a 3×3 glow that is brighter the closer it lands to the center. Pixels that are already bright, about 200 or more, take none. The number of particles swings with time and with the map's solar strength. |
 | Grid | A dot every 1/30 of the width, in both directions. The dots scroll one pixel per frame, left or right, and their brightness pulses slowly. A dot only brightens a pixel, never darkens it. |
-| Nuclide | When the volume jumps above 1.1 times its recent average, a ring of 3…7 soft discs drops 34…41 pixels from the center. The bigger the jump, the bigger the discs, up to 10 pixels. In 4 looks out of 7 it replaces the waveform, except over mode 10. |
+| Nuclide | When the volume jumps above 1.1 times its recent average, a ring of 3…7 soft discs drops 34…41 pixels from the center. The bigger the jump, the bigger the discs, up to 10 pixels. In silence a ring of random size drops about 2.5 times a second instead. In 4 looks out of 7 it replaces the waveform, except over mode 10. |
 | Shade bobs | One bob wobbles a few pixels around the center and takes four random steps of up to two pixels per frame. Each step adds 2 to its pixel and 1 to the four pixels beside it, up to just below white. The bob builds a soft, shifting glow at the center. The original's preset files call it "shadebobs". |
+| Spectral dots | Three soft discs, one each for the bass, the middle, and the treble. Each disc grows with its band's level, up to 10 pixels, and jumps along its own looping path when its band rises, so the dots dance with the music's attacks. A wavering note makes it creep, and a steep fall holds it still. They always replace the waveform. The original had them switched off. |
+| Crystals | Every frame, a star of 2…7 thin spokes, 6…25 pixels long, bursts from near the center, lifting the pixels it crosses to a middle brightness. The map smears the stars into a sparkling stream. The original had them commented out. |
+| Edges | Mode 6 only, and part of the map rather than an effect pick. Faint, flickering noise along three rows at the top and bottom, in slow waves, which the vortex field pulls inward. The original had it commented out. |
 
 ## Other terms
 
