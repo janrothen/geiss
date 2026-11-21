@@ -1937,8 +1937,10 @@ void testSoftSpot() {
 void testIdleWave() {
     geiss::Engine engine = engineDrawing(1, 160, 90);
     engine.setLocked(true);
-    tickSilence(engine, 1.0, 30);
-    check(engine.idleLevel() == 0.f, "the idle wave waits through the first second of silence");
+    tickSilence(engine, 1.4, 30);
+    check(engine.idleLevel() == 0.f, "the idle wave waits through the first 1.4 s of silence");
+    tickSilence(engine, 0.2, 30);
+    check(engine.idleLevel() > 0.f && engine.idleLevel() < 0.05f, "the idle wave starts rising after 1.5 s of silence");
     const geiss::FrameView settled = tickSilence(engine, 8.0, 30);
     check(engine.idleLevel() == 1.f, "the idle wave has risen after about six seconds of silence");
     check(litPixels(settled).size() > 160, "silence keeps a moving picture");
@@ -1976,7 +1978,47 @@ void testIdleWave() {
     geiss::Engine fast = engineDrawing(1, 160, 90);
     tickSilence(slow, 3.0, 30);
     tickSilence(fast, 3.0, 120);
-    checkNear(slow.idleLevel(), fast.idleLevel(), 0.02f, "the idle wave rises at the same pace at any frame rate");
+    checkNear(slow.idleLevel(), fast.idleLevel(), 0.01f, "the idle wave rises at the same pace at any frame rate");
+    // At 12.5 fps a tick that crosses the wait only counts the part past it: 18 ticks reach
+    // 1.44 s, and the next ends 0.02 s past the wait.
+    geiss::Engine coarse = engineDrawing(1, 160, 90);
+    for (int i = 0; i < 19; ++i) {
+        coarse.tick(0.08, quietFrame());
+    }
+    checkNear(coarse.idleLevel(), 0.02f / 4.f, 0.002f, "a tick across the idle wait counts only the time past it");
+
+    // Sound too faint for the waveform to draw brings the idle wave up as silence does.
+    geiss::AudioFrame faint = beatFrame(false, 1.f, 0.f);
+    faint.volume = 1.f;
+    faint.averageVolume = 1.f;
+    geiss::Engine hushed = engineDrawing(1, 160, 90);
+    hushed.setLocked(true);
+    for (int i = 0; i < 9 * 30; ++i) {
+        hushed.tick(1.0 / 30.0, faint);
+    }
+    check(hushed.soundActive(), "faint sound still counts as sound for the effects");
+    check(hushed.idleLevel() == 1.f, "faint sound that draws no waveform brings up the idle wave");
+    hushed.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
+    check(hushed.idleLevel() == 0.f, "a drawn waveform replaces the idle wave at once");
+
+    // Beat mode's dark gaps between hits do not count as faint.
+    geiss::Engine beating = engineDrawing(1, 160, 90);
+    for (int i = 0; i < 3 * 30; ++i) {
+        beating.tick(1.0 / 30.0, beatFrame(true, 0.f, 0.f));
+    }
+    check(beating.idleLevel() == 0.f, "beat mode's dark gaps keep the idle wave down");
+
+}
+
+// The idle wave's phases wrap in double, so they still advance one 120 Hz frame at a time
+// after a week of running, when a float clock would only change every few frames.
+void testWrappedPhase() {
+    constexpr double week = 7.0 * 24.0 * 3600.0;
+    const float now = geiss::wrappedPhase(0.31, week);
+    const float next = geiss::wrappedPhase(0.31, week + 1.0 / 120.0);
+    checkNear(next - now, 0.31f / 120.f, 0.0005f, "an idle phase advances smoothly after a week");
+    check(std::fabs(now) < 6.2832f, "an idle phase wraps to one turn");
+    check(geiss::wrappedPhase(-0.17, 100.0) <= 0.f, "a backward idle phase stays negative");
 }
 
 }  // namespace
@@ -2034,6 +2076,7 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testCircleSeam();
     testSoftSpot();
     testIdleWave();
+    testWrappedPhase();
     testWrapColumn();
     testBandsMatchSerial();
     testFrameChanged();

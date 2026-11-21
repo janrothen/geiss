@@ -39,6 +39,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <numbers>
 
 namespace geiss {
 namespace {
@@ -80,6 +81,7 @@ constexpr double kIdleBreathSeconds = 7.0;
 constexpr float kIdleAmplitude = 0.3f;
 constexpr float kIdleSwell = 0.1f;
 constexpr double kIdleSwellSeconds = 11.0;
+constexpr double kTau = 2.0 * std::numbers::pi;
 
 bool lookMayChange(double overdue, const AudioFrame& audio) {
     if (!audio.beatMode || overdue >= kMaxBeatWait) {
@@ -160,6 +162,10 @@ void plotSoftSpot(std::uint8_t* indices, int width, int height, int x, int y, in
             plotPixel(indices, width, height, x + dx, y + dy, bright * weight / 256);
         }
     }
+}
+
+float wrappedPhase(double radiansPerSecond, double seconds) {
+    return static_cast<float>(std::fmod(radiansPerSecond * seconds, kTau));
 }
 
 namespace {
@@ -338,18 +344,33 @@ void drawWaveform(std::uint8_t* indices, int width, int height, const AudioFrame
     drawShape(indices, width, height, audio, Ink{bright, false}, waveform, mode, centerXNorm, centerYNorm, motionTime);
 }
 
-// The idle wave's signal at column position u (0...1) and time t. Left runs three slow
-// cycles across the frame and right two, so the oscilloscope draws a 3:2 figure. Each
-// side adds a faster, smaller partial drifting the other way, so the shape keeps changing
-// without repeating soon.
-float idleLeft(float u, float t) {
-    constexpr float kTau = 6.2831853f;
-    return 0.65f * std::sin(kTau * 3.f * u + 0.31f * t) + 0.35f * std::sin(kTau * 5.f * u - 0.17f * t + 1.3f);
+// The idle wave's drift phases at one moment. See `wrappedPhase`.
+struct IdlePhases {
+    float left = 0;
+    float leftPartial = 0;
+    float right = 0;
+    float rightPartial = 0;
+};
+
+IdlePhases idlePhases(double seconds) {
+    return {wrappedPhase(0.31, seconds), wrappedPhase(-0.17, seconds), wrappedPhase(0.23, seconds),
+            wrappedPhase(0.13, seconds)};
 }
 
-float idleRight(float u, float t) {
-    constexpr float kTau = 6.2831853f;
-    return 0.65f * std::sin(kTau * 2.f * u + 0.23f * t + 0.7f) + 0.35f * std::sin(kTau * 7.f * u + 0.13f * t);
+// The idle wave's signal at column position u (0...1). Left runs three slow cycles across
+// the frame and right two, so the oscilloscope draws a 3:2 figure. Each side adds a
+// faster, smaller partial drifting the other way, so the shape keeps changing without
+// repeating soon.
+float idleLeft(float u, const IdlePhases& phases) {
+    constexpr auto kTurn = static_cast<float>(kTau);
+    return 0.65f * std::sin(kTurn * 3.f * u + phases.left) +
+           0.35f * std::sin(kTurn * 5.f * u + phases.leftPartial + 1.3f);
+}
+
+float idleRight(float u, const IdlePhases& phases) {
+    constexpr auto kTurn = static_cast<float>(kTau);
+    return 0.65f * std::sin(kTurn * 2.f * u + phases.right + 0.7f) +
+           0.35f * std::sin(kTurn * 7.f * u + phases.rightPartial);
 }
 
 }  // namespace
@@ -544,6 +565,10 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
 
     soundActive_ = !audio.silent && !audio.samples.empty();
     silentSeconds_ = soundActive_ ? 0 : silentSeconds_ + dt;
+    // Sound too faint for the waveform to draw counts as quiet for the idle wave. The beat
+    // scale is left out, so the dark gaps between hits in beat mode do not bring it up.
+    const bool faint = !soundActive_ || waveBrightness(audio.volume, audio.averageVolume) < 1.f;
+    faintSeconds_ = faint ? faintSeconds_ + dt : 0;
     if (!locked_) {
         mapElapsed_ += dt;
         if (mapElapsed_ >= kMapInterval && lookMayChange(mapElapsed_ - kMapInterval, audio)) {
@@ -589,13 +614,15 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
 }
 
 void Engine::updateIdle(double dt) {
-    if (soundActive_ || !idleWaveEnabled_) {
+    if (faintSeconds_ <= 0 || !idleWaveEnabled_) {
         idleLevel_ = 0;
         return;
     }
-    // silentSeconds_ already includes this tick.
-    if (silentSeconds_ >= kIdleWaitSeconds) {
-        idleLevel_ = std::min(idleLevel_ + dt / kIdleRiseSeconds, 1.0);
+    // faintSeconds_ already includes this tick. Only the part of it past the wait counts, so
+    // the rise keeps the same pace at any frame rate.
+    const double pastWait = std::min(dt, faintSeconds_ - kIdleWaitSeconds);
+    if (pastWait > 0) {
+        idleLevel_ = std::min(idleLevel_ + pastWait / kIdleRiseSeconds, 1.0);
     }
 }
 
@@ -605,8 +632,6 @@ void Engine::drawIdleWave() {
     if (idleLevel_ <= 0) {
         return;
     }
-    const auto t = static_cast<float>(motionTime_);
-    constexpr double kTau = 6.283185307179586;
     const auto level = static_cast<float>(idleLevel_);
     const int bright = static_cast<int>(
         level * (kIdleBright + kIdleBreath * static_cast<float>(std::sin(motionTime_ * kTau / kIdleBreathSeconds))));
@@ -615,14 +640,15 @@ void Engine::drawIdleWave() {
     }
     const float amplitude =
         level * (kIdleAmplitude + kIdleSwell * static_cast<float>(std::sin(motionTime_ * kTau / kIdleSwellSeconds)));
+    const IdlePhases phases = idlePhases(motionTime_);
     const auto columns = static_cast<std::size_t>(width_);
     idleFrame_.samples.resize(columns);
     idleFrame_.left.resize(columns);
     idleFrame_.right.resize(columns);
     for (std::size_t x = 0; x < columns; ++x) {
         const float u = static_cast<float>(x) / static_cast<float>(columns - 1);
-        const float left = idleLeft(u, t) * amplitude;
-        const float right = idleRight(u, t) * amplitude;
+        const float left = idleLeft(u, phases) * amplitude;
+        const float right = idleRight(u, phases) * amplitude;
         idleFrame_.left[x] = left;
         idleFrame_.right[x] = right;
         idleFrame_.samples[x] = 0.5f * (left + right);
@@ -630,7 +656,7 @@ void Engine::drawIdleWave() {
     const int waveform = effects_.hideWaveform ? 5 : waveform_;
     // Soft spots: the idle wave is slow and faint, and sharp dots looked out of place on it.
     drawShape(back_.data(), width_, height_, idleFrame_, Ink{bright, true}, waveform, mapParameters_.mode,
-              mapParameters_.centerXNorm, mapParameters_.centerYNorm, t);
+              mapParameters_.centerXNorm, mapParameters_.centerYNorm, static_cast<float>(motionTime_));
 }
 
 }  // namespace geiss
