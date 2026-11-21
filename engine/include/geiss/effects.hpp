@@ -42,12 +42,17 @@
 
 namespace geiss {
 
-// The original's layered effects (Effects.h), in its effect[] order.
-enum class Effect : std::uint8_t { Chasers, Bar, Dots, Solar, Grid, Nuclide, Shade };
-constexpr int kEffectCount = 7;
+// The original's layered effects (Effects.h), in its effect[] order. Spectral dots were the
+// original's eighth slot, with weight 0 on every map; neutrons and crystals were commented out.
+// Those three have weights of this port's own.
+enum class Effect : std::uint8_t { Chasers, Bar, Dots, Solar, Grid, Nuclide, Shade, Spectral, Neutrons, Crystals };
+constexpr int kEffectCount = 10;
 
 // The effect's name from docs/glossary.md.
 const char* effectName(Effect effect);
+
+// Mode 6 draws noisy bands along its top and bottom edges, outside the effect picks.
+constexpr bool modeHasEdges(int mode) { return mode == 6; }
 
 // One map mode's effect setup, from CModeInfo. Weights are out of 1000.
 struct ModeEffects {
@@ -67,7 +72,7 @@ struct EffectSet {
     int chasers = 1;
     // Grid scroll direction, 1 or -1.
     int gridDirection = 1;
-    // The nuclide replaces the waveform in 4 looks out of 7.
+    // The nuclide replaces the waveform in 4 looks out of 7, and spectral dots always do.
     bool hideWaveform = false;
     // Map 1 sometimes opens with a burst of solar particles, whether or not Solar is on.
     bool solarBurst = false;
@@ -98,7 +103,7 @@ public:
 
     // `frames` is the elapsed time in reference frames (dt * 30). `centerX` and `centerY`
     // are the map center in pixels, and `mode` is the map mode. While `audio` has no sound,
-    // only the map's center darkening draws.
+    // only the map's center darkening and the nuclide's random rings draw.
     void draw(std::uint8_t* indices, int width, int height, const EffectSet& effects, int mode,
               float centerX, float centerY, double frames, const AudioFrame& audio);
 
@@ -120,7 +125,13 @@ private:
     void dropSolarParticles(const Canvas& canvas, int count);
     void grid(const Canvas& canvas, int direction);
     void nuclide(const Canvas& canvas, int steps, const AudioFrame& audio);
+    void silentNuclide(const Canvas& canvas, int steps);
     void nuclideRing(const Canvas& canvas, float discRadius);
+    void disc(const Canvas& canvas, int cx, int cy, float radius);
+    void spectral(const Canvas& canvas, int steps, const AudioFrame& audio);
+    void neutrons(const Canvas& canvas, int steps);
+    void crystals(const Canvas& canvas, int steps);
+    void edges(const Canvas& canvas);
     void diminishCenter(const Canvas& canvas, int mode, float dwindle, int steps);
 
     static constexpr int kTrail = 20;
@@ -144,6 +155,9 @@ private:
     bool burstPending_ = false;
     // avg_vol_narrow: 0.3 of the previous value and 0.7 of the new volume per frame.
     float narrowVolume_ = 1.f;
+    // The spectral dots' last smoothed band levels and their path phases (g_phase_inc).
+    std::array<float, kSpectrumBands> spectralLast_{};
+    std::array<float, kSpectrumBands> spectralPhase_{};
 };
 
 }  // namespace geiss

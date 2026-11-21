@@ -92,6 +92,9 @@ void runBandsConcurrently(void* /*host*/, int count, void* job, geiss::BandRunne
             }
             [names addObject:name];
         }
+        if (geiss::modeHasEdges(engine.mapMode())) {
+            [names addObject:@"Edges"];
+        }
         _effects = [names copy];
         _resting = !engine.soundActive();
     }

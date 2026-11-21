@@ -36,9 +36,13 @@
 
 #include "geiss/beat.hpp"
 
+#include <array>
 #include <vector>
 
 namespace geiss {
+
+// Bass, middle, and treble, for the spectral dots.
+constexpr int kSpectrumBands = 3;
 
 // One captured block. `samples` is interleaved and owned by the caller.
 struct PcmBlock {
@@ -71,6 +75,10 @@ struct AudioFrame {
     float beatBrightness = 1;
     float bigBeatRatio = 0;
     float bassAverage = 0;
+    // Bass (below 250 Hz), middle (250 Hz...2 kHz), and treble (above 2 kHz) on the scale of
+    // the original's spectral dots, 0...255: the mean absolute level over the newest 1/30 s,
+    // after gain, weighted up toward the treble.
+    std::array<float, kSpectrumBands> spectrum{};
 };
 
 // Turns PCM into an AudioFrame, including the beat state from BeatDetector.

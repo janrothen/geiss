@@ -46,11 +46,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, copy) NSString *mapName;
 @property (nonatomic, readonly) int waveform;
 @property (nonatomic, readonly, copy) NSString *waveformName;
-// True when the nuclide replaces the waveform in this look.
+// True when the nuclide or spectral dots replace the waveform in this look.
 @property (nonatomic, readonly) BOOL waveformHidden;
-// The look's effects in the original's order. Chasers reads "Chasers x2" for two.
+// The look's effects in the original's order. Chasers reads "Chasers x2" for two. Mode 6
+// adds "Edges", which belong to the map rather than the effect picks.
 @property (nonatomic, readonly, copy) NSArray<NSString *> *effects;
-// True while the engine last ticked in silence, so the effects rest.
+// True while the engine last ticked in silence, so the effects rest, apart from the
+// nuclide's random rings.
 @property (nonatomic, readonly) BOOL resting;
 
 @end

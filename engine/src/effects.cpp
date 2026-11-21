@@ -46,9 +46,15 @@ constexpr double kFloatFramesPerFrame = 1.6;
 // The original's effect sizes are for a 640-wide frame.
 constexpr float kReferenceWidth = 640.f;
 
+// The original's seven live effects. Spectral dots, neutrons, and crystals come after them.
+constexpr std::size_t kOriginalEffects = 7;
+// This port's weight for spectral dots, neutrons, and crystals on every map. The original
+// gave them none: spectral dots had weight 0, and the other two were commented out.
+constexpr int kAddedEffectWeight = 100;
+
 struct BaseMode {
     // Chasers, Bar, Dots, Solar, Grid, Nuclide, Shade.
-    std::array<int, kEffectCount> weights;
+    std::array<int, kOriginalEffects> weights;
     int solarMax;
     float centerDwindle;
     int minEffects;
@@ -109,7 +115,7 @@ bool hasSound(const AudioFrame& audio) { return !audio.silent && !audio.samples.
 
 const char* effectName(Effect effect) {
     static constexpr std::array<const char*, kEffectCount> kNames = {
-        "Chasers", "Bar", "Dots", "Solar", "Grid", "Nuclide", "Shade bobs",
+        "Chasers", "Bar", "Dots", "Solar", "Grid", "Nuclide", "Shade bobs", "Spectral dots", "Neutrons", "Crystals",
     };
     const auto index = static_cast<std::size_t>(effect);
     if (index >= kNames.size()) {
@@ -126,7 +132,10 @@ ModeEffects modeEffects(int mode) {
     const BaseMode& base =
         mode >= 1 && mode <= static_cast<int>(kLowModes.size()) ? kLowModes[static_cast<std::size_t>(mode - 1)] : kHighMode;
     ModeEffects info;
-    info.weights = base.weights;
+    std::copy(base.weights.begin(), base.weights.end(), info.weights.begin());
+    info.weights[slot(Effect::Spectral)] = kAddedEffectWeight;
+    info.weights[slot(Effect::Neutrons)] = kAddedEffectWeight;
+    info.weights[slot(Effect::Crystals)] = kAddedEffectWeight;
     info.solarMax = base.solarMax;
     info.centerDwindle = base.centerDwindle;
     if (mode >= 20 && mode <= 23) {
@@ -214,6 +223,8 @@ EffectSet randomEffects(int mode, bool soundActive, Random& random) {
     // The nuclide replaces the waveform 4 times in 7. The original set mode 10's waveform
     // again afterwards, so mode 10 keeps it.
     effects.hideWaveform = effects.has(Effect::Nuclide) && random.below(7) > 2 && mode != 10;
+    // Spectral dots always replace the waveform. The original set that last, so mode 10 too.
+    effects.hideWaveform = effects.hideWaveform || effects.has(Effect::Spectral);
     return effects;
 }
 
@@ -249,10 +260,15 @@ void EffectLayer::draw(std::uint8_t* indices, int width, int height, const Effec
         narrowVolume_ = narrowVolume_ * 0.3f + audio.volume * 0.7f;
     }
 
-    // Silence keeps the picture calm: no effect draws until sound returns, and a look that
-    // opens in silence loses its solar burst. The center still darkens, as part of the map.
+    // Silence keeps the picture calm: no other effect draws until sound returns, and a look
+    // that opens in silence loses its solar burst. The nuclide drops its random rings, and the
+    // center still darkens, as part of the map.
     if (!hasSound(audio)) {
         burstPending_ = false;
+        spectralLast_ = {};
+        if (effects.has(Effect::Nuclide)) {
+            silentNuclide(canvas, steps);
+        }
         diminishCenter(canvas, mode, info.centerDwindle, steps);
         return;
     }
@@ -276,8 +292,20 @@ void EffectLayer::draw(std::uint8_t* indices, int width, int height, const Effec
     if (effects.has(Effect::Nuclide)) {
         nuclide(canvas, steps, audio);
     }
+    if (effects.has(Effect::Spectral)) {
+        spectral(canvas, steps, audio);
+    }
+    if (modeHasEdges(mode)) {
+        edges(canvas);
+    }
     if (effects.has(Effect::Grid)) {
         grid(canvas, effects.gridDirection);
+    }
+    if (effects.has(Effect::Crystals)) {
+        crystals(canvas, steps);
+    }
+    if (effects.has(Effect::Neutrons)) {
+        neutrons(canvas, steps);
     }
     if (effects.has(Effect::Solar)) {
         solar(canvas, info.solarMax, frames);
@@ -470,8 +498,7 @@ void EffectLayer::grid(const Canvas& canvas, int direction) {
 }
 
 // Nuclide: a jump in volume (above 1.1 times avg_vol_narrow) drops a ring of discs whose
-// size follows the jump. The original's random rings in silence are left out, because
-// effects do not draw in silence.
+// size follows the jump.
 void EffectLayer::nuclide(const Canvas& canvas, int steps, const AudioFrame& audio) {
     for (int step = 0; step < steps; ++step) {
         if (audio.volume > narrowVolume_ * 1.1f) {
@@ -481,24 +508,125 @@ void EffectLayer::nuclide(const Canvas& canvas, int steps, const AudioFrame& aud
     }
 }
 
+// In silence, a ring of random size drops about one frame in 12, as the original did.
+void EffectLayer::silentNuclide(const Canvas& canvas, int steps) {
+    for (int step = 0; step < steps; ++step) {
+        if (random_.below(12) == 0) {
+            nuclideRing(canvas, static_cast<float>(3 + random_.below(8)));
+        }
+    }
+}
+
 // 3...7 soft discs evenly around a circle of 34...41 pixels (at 640 wide) about the center.
-// Each adds (radius - distance) * 25 out to its radius.
 void EffectLayer::nuclideRing(const Canvas& canvas, float discRadius) {
     const int nodes = 3 + random_.below(5);
     const auto phase = static_cast<float>(random_.below(1000));
     const float ring = static_cast<float>(34 + random_.below(8)) * canvas.scale;
-    const int extent = static_cast<int>(std::ceil(10.f * canvas.scale));
     for (int n = 0; n < nodes; ++n) {
         const float angle = static_cast<float>(n) / static_cast<float>(nodes) * 6.28f + phase;
-        const int cx = static_cast<int>(canvas.centerX + ring * std::cos(angle));
-        const int cy = static_cast<int>(canvas.centerY + ring * std::sin(angle));
-        for (int dy = -extent; dy <= extent; ++dy) {
-            for (int dx = -extent; dx <= extent; ++dx) {
-                const float distance = std::sqrt(static_cast<float>(dx * dx + dy * dy)) / canvas.scale;
-                const int value = static_cast<int>((discRadius - distance) * 25.f);
-                if (value > 0) {
-                    add(canvas.indices, canvas.width, canvas.height, cx + dx, cy + dy, value);
+        disc(canvas, static_cast<int>(canvas.centerX + ring * std::cos(angle)),
+             static_cast<int>(canvas.centerY + ring * std::sin(angle)), discRadius);
+    }
+}
+
+// A soft disc of up to 10 pixels (at 640 wide). It adds (radius - distance) * 25 out to its radius.
+void EffectLayer::disc(const Canvas& canvas, int cx, int cy, float radius) {
+    const int extent = static_cast<int>(std::ceil(10.f * canvas.scale));
+    for (int dy = -extent; dy <= extent; ++dy) {
+        for (int dx = -extent; dx <= extent; ++dx) {
+            const float distance = std::sqrt(static_cast<float>(dx * dx + dy * dy)) / canvas.scale;
+            const int value = static_cast<int>((radius - distance) * 25.f);
+            if (value > 0) {
+                add(canvas.indices, canvas.width, canvas.height, cx + dx, cy + dy, value);
+            }
+        }
+    }
+}
+
+// Spectral dots: one soft disc for each of bass, middle, and treble. Each band's level is
+// smoothed (0.6 new, 0.4 old per frame) and sets its disc's radius, level * 0.06 - 2, up to 10.
+// A disc wanders on a two-cosine path around the center, and its band rising pushes it back
+// along that path, so the dots jump with the music's attacks in each band.
+void EffectLayer::spectral(const Canvas& canvas, int steps, const AudioFrame& audio) {
+    const float s = canvas.scale;
+    for (int step = 0; step < steps; ++step) {
+        for (std::size_t band = 0; band < spectralLast_.size(); ++band) {
+            const float last = spectralLast_.at(band);
+            const float level = std::clamp(audio.spectrum.at(band) * 0.6f + last * 0.4f, 0.f, 255.f);
+            if (level > last - 4.f) {
+                spectralPhase_.at(band) += (last - level) * 2.5f;
+            }
+            spectralLast_.at(band) = level;
+            const float radius = std::min(level * 0.06f - 2.f, 10.f);
+            if (radius <= 0.f) {
+                continue;
+            }
+            const auto n = static_cast<float>(band);
+            const float p = spectralPhase_.at(band);
+            const float x = 64.f * std::cos(p * 0.00451f + n * 99.f + 3.f) + 51.f * std::cos(p * 0.00572f + n * 13.f + 7.f);
+            const float y = 51.f * std::cos(p * 0.00502f + n * 78.f + 8.f) + 45.f * std::cos(p * 0.00653f + n * 17.f + 5.f);
+            disc(canvas, static_cast<int>(canvas.centerX + s * x), static_cast<int>(canvas.centerY + s * y), radius);
+        }
+    }
+}
+
+// Neutrons: on every third frame, one time in three, a full soft disc lands anywhere at least
+// 20 pixels (at 640 wide) inside the frame.
+void EffectLayer::neutrons(const Canvas& canvas, int steps) {
+    const auto first = static_cast<long long>(std::floor(clock_)) - steps + 1;
+    const int margin = static_cast<int>(20.f * canvas.scale);
+    for (int step = 0; step < steps; ++step) {
+        if ((first + step) % 3 != 0 || random_.below(3) != 0) {
+            continue;
+        }
+        const int x = margin + random_.below(std::max(1, canvas.width - 2 * margin));
+        const int y = margin + random_.below(std::max(1, canvas.height - 2 * margin));
+        disc(canvas, x, y, 10.f);
+    }
+}
+
+// Crystals: each frame, 2...7 spokes of 6...25 pixels (at 640 wide) burst from a point within
+// 15 pixels of the center. Every pixel they cross is raised to at least 150.
+void EffectLayer::crystals(const Canvas& canvas, int steps) {
+    const float s = canvas.scale;
+    for (int step = 0; step < steps; ++step) {
+        const float cx = canvas.centerX + static_cast<float>(random_.below(30) - 15) * s;
+        const float cy = canvas.centerY + static_cast<float>(random_.below(30) - 15) * s;
+        const int spokes = 2 + random_.below(6);
+        const float length = static_cast<float>(6 + random_.below(20)) * s;
+        const auto phase = static_cast<float>(random_.below(100));
+        for (int n = 0; n < spokes; ++n) {
+            const float angle = static_cast<float>(n) / static_cast<float>(spokes) * 6.28f + phase;
+            const float dx = std::cos(angle);
+            const float dy = std::sin(angle);
+            const auto halfSteps = static_cast<int>(std::ceil(length * 2.f));
+            for (int k = 0; k < halfSteps; ++k) {
+                const float t = static_cast<float>(k) * 0.5f;
+                if (std::uint8_t* p = pixel(canvas.indices, canvas.width, canvas.height, static_cast<int>(cx + dx * t),
+                                            static_cast<int>(cy + dy * t));
+                    p != nullptr && *p < 150) {
+                    *p = 150;
                 }
+            }
+        }
+    }
+}
+
+// Mode6Edges: three rows along the top and three along the bottom take noise of 0...39 over a
+// slow wave of 0...80, so the vortex field pulls a faint, moving texture in from both edges.
+void EffectLayer::edges(const Canvas& canvas) {
+    const int rows = std::min(3, canvas.height / 2);
+    const double f = clock_;
+    for (int x = 0; x < canvas.width; ++x) {
+        const double u = static_cast<double>(x) / static_cast<double>(canvas.scale);
+        const int bottom = static_cast<int>(40.0 + 40.0 * std::sin(f * 0.040 + u * 0.031));
+        const int top = static_cast<int>(40.0 + 40.0 * std::sin(f * -0.030 + u * 0.024));
+        for (int r = 0; r < rows; ++r) {
+            if (std::uint8_t* p = pixel(canvas.indices, canvas.width, canvas.height, x, r)) {
+                *p = static_cast<std::uint8_t>(top + random_.below(40));
+            }
+            if (std::uint8_t* p = pixel(canvas.indices, canvas.width, canvas.height, x, canvas.height - 1 - r)) {
+                *p = static_cast<std::uint8_t>(bottom + random_.below(40));
             }
         }
     }

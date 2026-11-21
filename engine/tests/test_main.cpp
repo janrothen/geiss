@@ -1507,6 +1507,17 @@ void testModeEffectsTable() {
         }
     }
     check(capped, "every weight stays within 0...900");
+    bool added = true;
+    for (int mode = geiss::kFirstMapMode; mode <= geiss::kLastMapMode; ++mode) {
+        const geiss::ModeEffects info = geiss::modeEffects(mode);
+        added = added && at(info, Effect::Spectral) == 100 && at(info, Effect::Neutrons) == 100 &&
+                at(info, Effect::Crystals) == 100;
+    }
+    check(added, "spectral dots, neutrons, and crystals have weight 100 on every map");
+    check(geiss::modeHasEdges(6) && !geiss::modeHasEdges(5) && !geiss::modeHasEdges(25), "only mode 6 draws edges");
+    check(std::string(geiss::effectName(Effect::Spectral)) == "Spectral dots" &&
+              std::string(geiss::effectName(Effect::Crystals)) == "Crystals",
+          "the new effects use their glossary names");
 }
 
 void testRandomEffectsRespectLimits() {
@@ -1516,6 +1527,7 @@ void testRandomEffectsRespectLimits() {
     bool withinMin = true;
     bool noBarWithGrid = true;
     bool hideNeedsNuclide = true;
+    bool spectralHides = true;
     bool zeroNeverComes = true;
     bool chaserCount = true;
     for (int mode = geiss::kFirstMapMode; mode <= geiss::kLastMapMode; ++mode) {
@@ -1530,7 +1542,9 @@ void testRandomEffectsRespectLimits() {
                 withinMin = withinMin && count >= info.minEffects - 1;
             }
             noBarWithGrid = noBarWithGrid && !(effects.has(Effect::Grid) && effects.has(Effect::Bar));
-            hideNeedsNuclide = hideNeedsNuclide && (!effects.hideWaveform || (effects.has(Effect::Nuclide) && mode != 10));
+            const bool nuclideHides = effects.has(Effect::Nuclide) && mode != 10;
+            hideNeedsNuclide = hideNeedsNuclide && (!effects.hideWaveform || nuclideHides || effects.has(Effect::Spectral));
+            spectralHides = spectralHides && (!effects.has(Effect::Spectral) || effects.hideWaveform);
             for (std::size_t e = 0; e < effects.on.size(); ++e) {
                 zeroNeverComes = zeroNeverComes && !(effects.on[e] && info.weights[e] == 0);
             }
@@ -1540,7 +1554,8 @@ void testRandomEffectsRespectLimits() {
     check(withinMax, "a look never has more effects than its mode allows");
     check(withinMin, "without sound a look meets its mode's minimum");
     check(noBarWithGrid, "a grid turns the bar off");
-    check(hideNeedsNuclide, "only the nuclide hides the waveform, never over mode 10");
+    check(hideNeedsNuclide, "only the nuclide and spectral dots hide the waveform, the nuclide never over mode 10");
+    check(spectralHides, "spectral dots always replace the waveform");
     check(zeroNeverComes, "an effect with weight 0 never comes up");
     check(chaserCount, "chasers come as one or two");
 
@@ -1711,12 +1726,37 @@ void testNuclide() {
     const float reach = litReach(pixels, width, width / 2.f, height / 2.f);
     check(reach > 30.f * 0.5f && reach < (42.f + 11.f) * 0.5f + 2.f, "the discs sit on a ring around the center");
 
-    // Silence keeps the picture calm: no effect draws, and a burst due in silence is dropped.
+    // Silence keeps the picture calm: no other effect draws, and a burst due in silence is dropped.
     geiss::EffectSet every;
     every.on.fill(true);
+    every.set(Effect::Nuclide, false);
     every.chasers = 2;
     every.solarBurst = true;
-    check(litCount(runEffects(every, 1, width, height, 120, 1, quietFrame())) == 0, "no effect draws in silence");
+    check(litCount(runEffects(every, 1, width, height, 120, 1, quietFrame())) == 0,
+          "no effect but the nuclide draws in silence");
+    check(litCount(runEffects(every, 6, width, height, 120, 1, quietFrame())) == 0, "mode 6's edges rest in silence");
+
+    // In silence the nuclide drops a random ring about one frame in 12.
+    int silentRings = 0;
+    geiss::EffectLayer resting(9);
+    for (int i = 0; i < 1200; ++i) {
+        std::fill(pixels.begin(), pixels.end(), 0);
+        resting.draw(pixels.data(), width, height, effects, 25, width / 2.f, height / 2.f, 1.0, quietFrame());
+        if (litCount(pixels) > 0) {
+            ++silentRings;
+            const float ringReach = litReach(pixels, width, width / 2.f, height / 2.f);
+            check(ringReach < (42.f + 11.f) * 0.5f + 2.f, "a silent ring sits around the center");
+        }
+    }
+    check(silentRings > 60 && silentRings < 140, "the nuclide drops a ring about one frame in 12 in silence");
+    int fastRings = 0;
+    geiss::EffectLayer fastResting(9);
+    for (int i = 0; i < 4800; ++i) {
+        std::fill(pixels.begin(), pixels.end(), 0);
+        fastResting.draw(pixels.data(), width, height, effects, 25, width / 2.f, height / 2.f, 0.25, quietFrame());
+        fastRings += litCount(pixels) > 0 ? 1 : 0;
+    }
+    check(fastRings > 60 && fastRings < 140, "silent rings keep their pace at 120 fps");
 
     geiss::EffectLayer late(5);
     geiss::EffectSet burstOnly;
@@ -1726,6 +1766,121 @@ void testNuclide() {
     late.draw(pixels.data(), width, height, burstOnly, 1, width / 2.f, height / 2.f, 1.0, quietFrame());
     late.draw(pixels.data(), width, height, burstOnly, 1, width / 2.f, height / 2.f, 1.0, steady);
     check(litCount(pixels) == 0, "a look that opens in silence loses its solar burst");
+}
+
+geiss::AudioFrame spectrumFrame(float bass, float middle, float treble) {
+    geiss::AudioFrame audio = beatFrame(false, 1.f, 0.f);
+    audio.spectrum = {bass, middle, treble};
+    return audio;
+}
+
+void testSpectralDots() {
+    using geiss::Effect;
+    constexpr int width = 640;
+    constexpr int height = 360;
+    constexpr float cx = width / 2.f;
+    constexpr float cy = height / 2.f;
+    const geiss::EffectSet effects = only(Effect::Spectral);
+    check(litCount(runEffects(effects, 25, width, height, 30, 1, spectrumFrame(0.f, 0.f, 0.f))) == 0,
+          "spectral dots stay dark without band levels");
+    check(litCount(runEffects(effects, 25, width, height, 30, 1, spectrumFrame(30.f, 30.f, 30.f))) == 0,
+          "quiet bands draw no spectral dots");
+    const Pixels loud = runEffects(effects, 25, width, height, 1, 1, spectrumFrame(255.f, 255.f, 255.f));
+    check(litCount(loud) > 0, "loud bands draw spectral dots");
+    check(litReach(loud, width, cx, cy) < 115.f + 96.f + 12.f, "spectral dots stay on their paths around the center");
+    // After one frame the smoothed level is 0.6 of 200, a radius of 5.2: up to 3 discs of 5.
+    const Pixels one = runEffects(effects, 25, width, height, 1, 1, spectrumFrame(200.f, 0.f, 0.f));
+    check(litCount(one) > 50 && litCount(one) < 120, "one band draws one disc sized by its level");
+    check(litCount(runEffects(effects, 25, width, height, 1, 4, spectrumFrame(200.f, 0.f, 0.f))) == litCount(one),
+          "spectral dots update once per reference frame at 120 fps");
+}
+
+void testNeutronsCrystalsAndEdges() {
+    using geiss::Effect;
+    constexpr int width = 320;
+    constexpr int height = 240;
+    constexpr float scale = width / 640.f;
+    const geiss::AudioFrame sound = beatFrame(false, 1.f, 0.f);
+
+    const Pixels neutrons = runEffects(only(Effect::Neutrons), 25, width, height, 90, 1, sound);
+    check(litCount(neutrons) > 0, "neutrons land");
+    check(*std::max_element(neutrons.begin(), neutrons.end()) > 200, "a neutron is a full disc");
+    bool inside = true;
+    for (std::size_t i = 0; i < neutrons.size(); ++i) {
+        const int x = static_cast<int>(i) % width;
+        const int y = static_cast<int>(i) / width;
+        const int margin = static_cast<int>(20.f * scale) - 6;
+        if (neutrons[i] > 0) {
+            inside = inside && x >= margin && y >= margin && x < width - margin && y < height - margin;
+        }
+    }
+    check(inside, "neutrons land inside the frame's margin");
+    int neutronFrames = 0;
+    geiss::EffectLayer layer(4);
+    Pixels pixels(static_cast<std::size_t>(width) * height, 0);
+    const geiss::EffectSet neutronsOnly = only(Effect::Neutrons);
+    for (int i = 0; i < 2700; ++i) {
+        std::fill(pixels.begin(), pixels.end(), 0);
+        layer.draw(pixels.data(), width, height, neutronsOnly, 25, width / 2.f, height / 2.f, 1.0, sound);
+        neutronFrames += litCount(pixels) > 0 ? 1 : 0;
+    }
+    check(neutronFrames > 230 && neutronFrames < 370, "a neutron lands about one frame in nine");
+
+    const Pixels crystal = runEffects(only(Effect::Crystals), 25, width, height, 1, 1, sound);
+    bool floor150 = litCount(crystal) > 0;
+    for (const std::uint8_t p : crystal) {
+        floor150 = floor150 && (p == 0 || p == 150);
+    }
+    check(floor150, "crystal spokes raise their pixels to 150");
+    check(litReach(crystal, width, width / 2.f, height / 2.f) < (21.3f + 25.f) * scale + 2.f,
+          "crystals burst near the center");
+    Pixels bright(static_cast<std::size_t>(width) * height, 200);
+    geiss::EffectLayer crystalLayer(4);
+    crystalLayer.draw(bright.data(), width, height, only(Effect::Crystals), 25, width / 2.f, height / 2.f, 1.0, sound);
+    check(std::all_of(bright.begin(), bright.end(), [](std::uint8_t p) { return p == 200; }),
+          "crystals never darken a pixel");
+
+    const Pixels edges = runEffects({}, 6, width, height, 1, 1, sound);
+    bool onEdges = true;
+    int lit = 0;
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+        const int y = static_cast<int>(i) / width;
+        const bool edgeRow = y < 3 || y >= height - 3;
+        onEdges = onEdges && (edgeRow ? edges[i] < 120 : edges[i] == 0);
+        lit += edgeRow && edges[i] > 0 ? 1 : 0;
+    }
+    check(onEdges, "mode 6 draws faint noise on three rows at the top and bottom");
+    check(lit > width * 3, "mode 6's edges cover the rows");
+    check(litCount(runEffects({}, 25, width, height, 1, 1, sound)) == 0, "other maps draw no edges");
+}
+
+void testSpectrumBands() {
+    constexpr double rate = 48000.0;
+    constexpr int frames = 4800;
+    auto bandsOf = [&](double hz, float amplitude) {
+        std::vector<float> tone(frames);
+        for (int i = 0; i < frames; ++i) {
+            tone[static_cast<std::size_t>(i)] =
+                amplitude * static_cast<float>(std::sin(2.0 * std::numbers::pi * hz * i / rate));
+        }
+        geiss::Analyzer analyzer;
+        geiss::PcmBlock block;
+        block.samples = tone.data();
+        block.frameCount = frames;
+        block.channels = 1;
+        block.sampleRate = rate;
+        return analyzer.analyze(block, 64, 1.f).spectrum;
+    };
+    const auto bass = bandsOf(60.0, 0.1f);
+    check(bass[0] > bass[1] && bass[0] > bass[2], "a 60 Hz tone fills the bass band");
+    const auto middle = bandsOf(800.0, 0.1f);
+    check(middle[1] > middle[0] && middle[1] > middle[2], "an 800 Hz tone fills the middle band");
+    const auto treble = bandsOf(8000.0, 0.1f);
+    check(treble[2] > treble[0] && treble[2] > treble[1], "an 8 kHz tone fills the treble band");
+    const auto quiet = bandsOf(800.0, 0.f);
+    check(quiet[0] == 0.f && quiet[1] == 0.f && quiet[2] == 0.f, "silence has no band levels");
+    const auto loud = bandsOf(60.0, 1.f);
+    check(loud[0] == 255.f, "band levels stop at 255");
 }
 
 void testCenterDwindle() {
@@ -2095,6 +2250,9 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testRandomEffectsRespectLimits();
     testEachEffectDraws();
     testNuclide();
+    testSpectralDots();
+    testNeutronsCrystalsAndEdges();
+    testSpectrumBands();
     testCenterDwindle();
     testMode5FollowsNuclide();
     testEngineEffects();

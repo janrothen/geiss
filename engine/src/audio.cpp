@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <numbers>
 
 namespace geiss {
 namespace {
@@ -133,6 +134,59 @@ float volumeOf(const std::vector<float>& mono, double sampleRate) {
     return (*high - *low) * kVolumeScale;
 }
 
+// The spectral dots' band edges.
+constexpr double kSpectrumLowHz = 250.0;
+constexpr double kSpectrumHighHz = 2000.0;
+// The original summed |sample| over 66 16-bit samples per band, stretched that by
+// (256 - 60) / (192 - 60), and weighted it by 0.0005 + 0.0007 u + 0.00045 sqrt(u), u = band / 2.
+// So a band's level is its mean |sample| times 32768 * 66 * 196 / 132 and that weight.
+constexpr double kSpectrumScale = 32768.0 * 66.0 * 196.0 / 132.0;
+// Intentional difference: the original read the weight after its loop, so every band took the
+// treble's. Each band takes its own here, as the formula intended.
+constexpr std::array<double, kSpectrumBands> kSpectrumWeights = {0.0005, 0.0005 + 0.00035 + 0.00045 * 0.70710678, 0.00165};
+
+float onePoleAlpha(double cutoffHz, double sampleRate) {
+    return static_cast<float>(1.0 - std::exp(-2.0 * std::numbers::pi * cutoffHz / sampleRate));
+}
+
+// Splits the mono samples into bass, middle, and treble with two-stage one-pole low-passes,
+// and measures each band over the newest 1/30 s. The filters run over the whole block first,
+// so they have settled by then.
+std::array<float, kSpectrumBands> spectrumOf(const std::vector<float>& mono, double sampleRate) {
+    std::array<float, kSpectrumBands> bands{};
+    if (mono.empty() || sampleRate <= 0) {
+        return bands;
+    }
+    const float lowAlpha = onePoleAlpha(kSpectrumLowHz, sampleRate);
+    const float highAlpha = onePoleAlpha(kSpectrumHighHz, sampleRate);
+    const auto size = static_cast<std::ptrdiff_t>(mono.size());
+    const std::ptrdiff_t window =
+        std::clamp(static_cast<std::ptrdiff_t>(sampleRate * kVolumeWindowSeconds), std::ptrdiff_t{1}, size);
+    const std::ptrdiff_t windowStart = size - window;
+    float low1 = 0;
+    float low2 = 0;
+    float high1 = 0;
+    float high2 = 0;
+    std::array<double, kSpectrumBands> sums{};
+    for (std::ptrdiff_t i = 0; i < size; ++i) {
+        const float sample = mono[static_cast<std::size_t>(i)];
+        low1 += lowAlpha * (sample - low1);
+        low2 += lowAlpha * (low1 - low2);
+        high1 += highAlpha * (sample - high1);
+        high2 += highAlpha * (high1 - high2);
+        if (i >= windowStart) {
+            sums[0] += std::fabs(low2);
+            sums[1] += std::fabs(high2 - low2);
+            sums[2] += std::fabs(sample - high2);
+        }
+    }
+    for (std::size_t band = 0; band < bands.size(); ++band) {
+        const double mean = sums.at(band) / static_cast<double>(window);
+        bands.at(band) = static_cast<float>(std::min(mean * kSpectrumScale * kSpectrumWeights.at(band), 255.0));
+    }
+    return bands;
+}
+
 bool hasAudioBlock(const PcmBlock& block) {
     return block.samples != nullptr && block.frameCount > 0 && block.channels > 0;
 }
@@ -196,6 +250,7 @@ AudioFrame Analyzer::analyze(const PcmBlock& block, int columns, float gain) {
     const auto retain = static_cast<float>(std::pow(kAverageVolumeRetain, elapsed * 30.0));
     averageVolume_ = averageVolume_ * retain + frame.volume * (1.f - retain);
     frame.averageVolume = averageVolume_;
+    frame.spectrum = spectrumOf(mono, block.sampleRate);
 
     frame.samples.assign(static_cast<std::size_t>(columns), 0.f);
     frame.left.assign(static_cast<std::size_t>(columns), 0.f);

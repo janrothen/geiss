@@ -1,6 +1,6 @@
 # Glossary
 
-Names and short descriptions of the macOS visualizer's 25 maps and 7 layered effects. Each description follows the engine code (`engine/src/map.cpp` and `engine/src/effects.cpp`). The exact formulas and every intentional difference from the original are in the [spec](spec/macos-port.md#prototype-milestone).
+Names and short descriptions of the macOS visualizer's 25 maps and 10 layered effects. Each description follows the engine code (`engine/src/map.cpp` and `engine/src/effects.cpp`). The exact formulas and every intentional difference from the original are in the [spec](spec/macos-port.md#prototype-milestone).
 
 ## Reading the map descriptions
 
@@ -44,7 +44,7 @@ Some details apply to every map:
 
 ## Layered effects
 
-Effects draw into the previous frame before the warp, so the map smears them into trails. They draw only while there is sound and rest in silence. Each look picks its effects with the map's weights. Most maps allow one or two at a time. Positions are around the map center, and sizes are for a 640-wide frame.
+Effects draw into the previous frame before the warp, so the map smears them into trails. They draw only while there is sound and rest in silence, except the nuclide's random rings. Each look picks its effects with the map's weights. Most maps allow one or two at a time. Positions are around the map center, and sizes are for a 640-wide frame.
 
 | Effect | What it does |
 |---|---|
@@ -53,8 +53,12 @@ Effects draw into the previous frame before the warp, so the map smears them int
 | Dots | A slow point keeps its last 20 positions as a trail of dots. Each dot keeps the brightness it had when it was placed, which cycles with time. Each frame the trail is redrawn and every dot shifts one pixel to the right. |
 | Solar | Particles land within 35 pixels of the center. Each adds a 3×3 glow that is brighter the closer it lands to the center. Pixels that are already bright, about 200 or more, take none. The number of particles swings with time and with the map's solar strength. |
 | Grid | A dot every 1/30 of the width, in both directions. The dots scroll one pixel per frame, left or right, and their brightness pulses slowly. A dot only brightens a pixel, never darkens it. |
-| Nuclide | When the volume jumps above 1.1 times its recent average, a ring of 3…7 soft discs drops 34…41 pixels from the center. The bigger the jump, the bigger the discs, up to 10 pixels. In 4 looks out of 7 it replaces the waveform, except over mode 10. |
+| Nuclide | When the volume jumps above 1.1 times its recent average, a ring of 3…7 soft discs drops 34…41 pixels from the center. The bigger the jump, the bigger the discs, up to 10 pixels. In silence a ring of random size drops about 2.5 times a second instead. In 4 looks out of 7 it replaces the waveform, except over mode 10. |
 | Shade bobs | One bob wobbles a few pixels around the center and takes four random steps of up to two pixels per frame. Each step adds 2 to its pixel and 1 to the four pixels beside it, up to just below white. The bob builds a soft, shifting glow at the center. The original's preset files call it "shadebobs". |
+| Spectral dots | Three soft discs, one each for the bass, the middle, and the treble. Each disc grows with its band's level, up to 10 pixels, and jumps along its own looping path when its band rises, so the dots dance with the music's attacks. They always replace the waveform. The original had them switched off. |
+| Neutrons | About three times a second, a bright soft disc of 10 pixels lands at a random spot anywhere in the frame. The original had them commented out. |
+| Crystals | Every frame, a star of 2…7 thin spokes, 6…25 pixels long, bursts from near the center, lifting the pixels it crosses to a middle brightness. The map smears the stars into a sparkling stream. The original had them commented out. |
+| Edges | Mode 6 only, and part of the map rather than an effect pick. Faint, flickering noise along three rows at the top and bottom, in slow waves, which the vortex field pulls inward. The original had it commented out. |
 
 ## Other terms
 
