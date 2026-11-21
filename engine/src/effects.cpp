@@ -242,6 +242,8 @@ void EffectLayer::clearTrail() { trailFilled_ = 0; }
 void EffectLayer::startLook(const EffectSet& effects) {
     clearTrail();
     burstPending_ = effects.solarBurst;
+    // A new look's spectral dots start from its own sound, not the last spectral look's.
+    spectralLast_ = {};
 }
 
 void EffectLayer::draw(std::uint8_t* indices, int width, int height, const EffectSet& effects, int mode,
@@ -293,9 +295,9 @@ void EffectLayer::draw(std::uint8_t* indices, int width, int height, const Effec
         nuclide(canvas, steps, audio);
     }
     if (effects.has(Effect::Spectral)) {
-        spectral(canvas, steps, audio);
+        spectral(canvas, steps, frames, audio);
     }
-    if (modeHasEdges(mode)) {
+    if (modeHasEdges(mode) && steps > 0) {
         edges(canvas);
     }
     if (effects.has(Effect::Grid)) {
@@ -525,17 +527,18 @@ void EffectLayer::nuclideRing(const Canvas& canvas, float discRadius) {
     for (int n = 0; n < nodes; ++n) {
         const float angle = static_cast<float>(n) / static_cast<float>(nodes) * 6.28f + phase;
         disc(canvas, static_cast<int>(canvas.centerX + ring * std::cos(angle)),
-             static_cast<int>(canvas.centerY + ring * std::sin(angle)), discRadius);
+             static_cast<int>(canvas.centerY + ring * std::sin(angle)), discRadius, 1.f);
     }
 }
 
-// A soft disc of up to 10 pixels (at 640 wide). It adds (radius - distance) * 25 out to its radius.
-void EffectLayer::disc(const Canvas& canvas, int cx, int cy, float radius) {
+// A soft disc of up to 10 pixels (at 640 wide). It adds (radius - distance) * 25 * strength out
+// to its radius.
+void EffectLayer::disc(const Canvas& canvas, int cx, int cy, float radius, float strength) {
     const int extent = static_cast<int>(std::ceil(10.f * canvas.scale));
     for (int dy = -extent; dy <= extent; ++dy) {
         for (int dx = -extent; dx <= extent; ++dx) {
             const float distance = std::sqrt(static_cast<float>(dx * dx + dy * dy)) / canvas.scale;
-            const int value = static_cast<int>((radius - distance) * 25.f);
+            const int value = static_cast<int>((radius - distance) * 25.f * strength);
             if (value > 0) {
                 add(canvas.indices, canvas.width, canvas.height, cx + dx, cy + dy, value);
             }
@@ -545,28 +548,50 @@ void EffectLayer::disc(const Canvas& canvas, int cx, int cy, float radius) {
 
 // Spectral dots: one soft disc for each of bass, middle, and treble. Each band's level is
 // smoothed (0.6 new, 0.4 old per frame) and sets its disc's radius, level * 0.06 - 2, up to 10.
-// A disc wanders on a two-cosine path around the center, and its band rising pushes it back
-// along that path, so the dots jump with the music's attacks in each band.
-void EffectLayer::spectral(const Canvas& canvas, int steps, const AudioFrame& audio) {
-    const float s = canvas.scale;
-    for (int step = 0; step < steps; ++step) {
-        for (std::size_t band = 0; band < spectralLast_.size(); ++band) {
-            const float last = spectralLast_.at(band);
-            const float level = std::clamp(audio.spectrum.at(band) * 0.6f + last * 0.4f, 0.f, 255.f);
-            if (level > last - 4.f) {
-                spectralPhase_.at(band) += (last - level) * 2.5f;
-            }
-            spectralLast_.at(band) = level;
-            const float radius = std::min(level * 0.06f - 2.f, 10.f);
-            if (radius <= 0.f) {
-                continue;
-            }
-            const auto n = static_cast<float>(band);
-            const float p = spectralPhase_.at(band);
-            const float x = 64.f * std::cos(p * 0.00451f + n * 99.f + 3.f) + 51.f * std::cos(p * 0.00572f + n * 13.f + 7.f);
-            const float y = 51.f * std::cos(p * 0.00502f + n * 78.f + 8.f) + 45.f * std::cos(p * 0.00653f + n * 17.f + 5.f);
-            disc(canvas, static_cast<int>(canvas.centerX + s * x), static_cast<int>(canvas.centerY + s * y), radius);
+// A disc wanders on a two-cosine path around the center. As in the original, the path's phase
+// moves whenever the level rises or falls by less than 4: back by 2.5 per level it rises, and
+// forward a little on a slight fall, so a steep fall holds the disc where it is.
+//
+// The levels and phases advance once per reference frame. Faster than that, each display frame
+// stamps the discs at their current place with its share of a frame, as the bar does, so the
+// map smears them into a continuous streak at the same brightness as at 30 fps.
+void EffectLayer::spectral(const Canvas& canvas, int steps, double frames, const AudioFrame& audio) {
+    if (frames < 1.0) {
+        for (int step = 0; step < steps; ++step) {
+            advanceSpectral(audio);
         }
+        drawSpectral(canvas, static_cast<float>(frames));
+        return;
+    }
+    for (int step = 0; step < steps; ++step) {
+        advanceSpectral(audio);
+        drawSpectral(canvas, 1.f);
+    }
+}
+
+void EffectLayer::advanceSpectral(const AudioFrame& audio) {
+    for (std::size_t band = 0; band < spectralLast_.size(); ++band) {
+        const float last = spectralLast_.at(band);
+        const float level = std::clamp(audio.spectrum.at(band) * 0.6f + last * 0.4f, 0.f, 255.f);
+        if (level > last - 4.f) {
+            spectralPhase_.at(band) += (last - level) * 2.5f;
+        }
+        spectralLast_.at(band) = level;
+    }
+}
+
+void EffectLayer::drawSpectral(const Canvas& canvas, float strength) {
+    const float s = canvas.scale;
+    for (std::size_t band = 0; band < spectralLast_.size(); ++band) {
+        const float radius = std::min(spectralLast_.at(band) * 0.06f - 2.f, 10.f);
+        if (radius <= 0.f) {
+            continue;
+        }
+        const auto n = static_cast<float>(band);
+        const float p = spectralPhase_.at(band);
+        const float x = 64.f * std::cos(p * 0.00451f + n * 99.f + 3.f) + 51.f * std::cos(p * 0.00572f + n * 13.f + 7.f);
+        const float y = 51.f * std::cos(p * 0.00502f + n * 78.f + 8.f) + 45.f * std::cos(p * 0.00653f + n * 17.f + 5.f);
+        disc(canvas, static_cast<int>(canvas.centerX + s * x), static_cast<int>(canvas.centerY + s * y), radius, strength);
     }
 }
 
@@ -581,7 +606,7 @@ void EffectLayer::neutrons(const Canvas& canvas, int steps) {
         }
         const int x = margin + random_.below(std::max(1, canvas.width - 2 * margin));
         const int y = margin + random_.below(std::max(1, canvas.height - 2 * margin));
-        disc(canvas, x, y, 10.f);
+        disc(canvas, x, y, 10.f, 1.f);
     }
 }
 
@@ -614,6 +639,7 @@ void EffectLayer::crystals(const Canvas& canvas, int steps) {
 
 // Mode6Edges: three rows along the top and three along the bottom take noise of 0...39 over a
 // slow wave of 0...80, so the vortex field pulls a faint, moving texture in from both edges.
+// The rows are overwritten once per reference frame, so the texture is the same at any refresh.
 void EffectLayer::edges(const Canvas& canvas) {
     const int rows = std::min(3, canvas.height / 2);
     const double f = clock_;

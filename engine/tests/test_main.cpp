@@ -1791,8 +1791,106 @@ void testSpectralDots() {
     // After one frame the smoothed level is 0.6 of 200, a radius of 5.2: up to 3 discs of 5.
     const Pixels one = runEffects(effects, 25, width, height, 1, 1, spectrumFrame(200.f, 0.f, 0.f));
     check(litCount(one) > 50 && litCount(one) < 120, "one band draws one disc sized by its level");
-    check(litCount(runEffects(effects, 25, width, height, 1, 4, spectrumFrame(200.f, 0.f, 0.f))) == litCount(one),
-          "spectral dots update once per reference frame at 120 fps");
+    // Four display frames at 120 fps leave the levels where one frame at 30 fps does.
+    auto nextFrame = [&](int ticks) {
+        geiss::EffectLayer layer(3);
+        layer.startLook(effects);
+        Pixels pixels(static_cast<std::size_t>(width) * height, 0);
+        for (int i = 0; i < ticks; ++i) {
+            layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0 / ticks, spectrumFrame(200.f, 0.f, 0.f));
+        }
+        std::fill(pixels.begin(), pixels.end(), 0);
+        layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(200.f, 0.f, 0.f));
+        return pixels;
+    };
+    check(nextFrame(4) == nextFrame(1), "spectral dots update once per reference frame at 120 fps");
+    auto sum = [](const Pixels& pixels) {
+        long total = 0;
+        for (const std::uint8_t p : pixels) {
+            total += p;
+        }
+        return total;
+    };
+    // A display frame at 120 fps adds about a quarter of a reference frame's light.
+    auto settledStamp = [&](double frames) {
+        geiss::EffectLayer layer(3);
+        layer.startLook(effects);
+        Pixels pixels(static_cast<std::size_t>(width) * height, 0);
+        for (int i = 0; i < 30; ++i) {
+            layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(200.f, 0.f, 0.f));
+        }
+        std::fill(pixels.begin(), pixels.end(), 0);
+        layer.draw(pixels.data(), width, height, effects, 25, cx, cy, frames, spectrumFrame(200.f, 0.f, 0.f));
+        return sum(pixels);
+    };
+    const long full = settledStamp(1.0);
+    const long quarter = settledStamp(0.25);
+    check(full > 0 && quarter > full * 15 / 100 && quarter < full * 30 / 100,
+          "at 120 fps a display frame stamps the spectral dots with its share of a frame");
+
+    // At 120 fps every display frame stamps the discs once they have a level.
+    {
+        geiss::EffectLayer layer(3);
+        layer.startLook(effects);
+        Pixels pixels(static_cast<std::size_t>(width) * height, 0);
+        bool everyFrame = true;
+        for (int i = 0; i < 16; ++i) {
+            std::fill(pixels.begin(), pixels.end(), 0);
+            layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 0.25, spectrumFrame(200.f, 200.f, 200.f));
+            if (i >= 3) {
+                everyFrame = everyFrame && litCount(pixels) > 0;
+            }
+        }
+        check(everyFrame, "at 120 fps spectral dots draw on every display frame");
+    }
+
+    // A slow fade within 4 levels moves the disc forward, as in the original; a steep fall holds it.
+    auto discCenter = [&](const Pixels& pixels) {
+        double x = 0;
+        double y = 0;
+        double weight = 0;
+        for (std::size_t i = 0; i < pixels.size(); ++i) {
+            const int column = static_cast<int>(i) % width;
+            const int row = static_cast<int>(i) / width;
+            x += static_cast<double>(pixels[i]) * static_cast<double>(column);
+            y += static_cast<double>(pixels[i]) * static_cast<double>(row);
+            weight += pixels[i];
+        }
+        return std::pair{x / weight, y / weight};
+    };
+    auto centerAfter = [&](float second) {
+        geiss::EffectLayer layer(3);
+        layer.startLook(effects);
+        Pixels pixels(static_cast<std::size_t>(width) * height, 0);
+        for (int i = 0; i < 30; ++i) {
+            layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(200.f, 0.f, 0.f));
+        }
+        std::fill(pixels.begin(), pixels.end(), 0);
+        layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(200.f, 0.f, 0.f));
+        const auto before = discCenter(pixels);
+        std::fill(pixels.begin(), pixels.end(), 0);
+        layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(second, 0.f, 0.f));
+        const auto after = discCenter(pixels);
+        return std::hypot(after.first - before.first, after.second - before.second);
+    };
+    check(centerAfter(200.f) < 0.5, "a steady band holds its disc still");
+    check(centerAfter(195.f) > 0.5, "a slight fall moves the disc a little, as in the original");
+    check(centerAfter(150.f) < 0.5, "a steep fall holds the disc where it is");
+
+    // A new look's spectral dots start from its own sound, not the last look's.
+    {
+        geiss::EffectLayer layer(3);
+        layer.startLook(effects);
+        Pixels pixels(static_cast<std::size_t>(width) * height, 0);
+        for (int i = 0; i < 30; ++i) {
+            layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(255.f, 255.f, 255.f));
+        }
+        layer.startLook(only(Effect::Chasers));
+        layer.startLook(effects);
+        std::fill(pixels.begin(), pixels.end(), 0);
+        layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(0.f, 0.f, 0.f));
+        check(litCount(pixels) == 0, "a new look's spectral dots forget the last look's levels");
+    }
 }
 
 void testNeutronsCrystalsAndEdges() {
@@ -1852,6 +1950,18 @@ void testNeutronsCrystalsAndEdges() {
     check(onEdges, "mode 6 draws faint noise on three rows at the top and bottom");
     check(lit > width * 3, "mode 6's edges cover the rows");
     check(litCount(runEffects({}, 25, width, height, 1, 1, sound)) == 0, "other maps draw no edges");
+    // The edges are rewritten once per reference frame, so 120 fps uses the same noise as 30 fps.
+    {
+        geiss::EffectLayer layer(4);
+        Pixels pixels(static_cast<std::size_t>(width) * height, 0);
+        int stamps = 0;
+        for (int i = 0; i < 8; ++i) {
+            std::fill(pixels.begin(), pixels.end(), 0);
+            layer.draw(pixels.data(), width, height, {}, 6, width / 2.f, height / 2.f, 0.25, sound);
+            stamps += litCount(pixels) > 0 ? 1 : 0;
+        }
+        check(stamps == 2, "at 120 fps mode 6 rewrites its edges once per reference frame");
+    }
 }
 
 void testSpectrumBands() {

@@ -95,7 +95,8 @@ class EffectLayer {
 public:
     explicit EffectLayer(std::uint32_t seed);
 
-    // Starts a new look's effects: clears the dot trail and arms the solar burst.
+    // Starts a new look's effects: clears the dot trail and the spectral levels, and arms the
+    // solar burst.
     void startLook(const EffectSet& effects);
 
     // Forgets the dot trail. Its positions are pixels, so a resize makes them stale.
@@ -127,8 +128,10 @@ private:
     void nuclide(const Canvas& canvas, int steps, const AudioFrame& audio);
     void silentNuclide(const Canvas& canvas, int steps);
     void nuclideRing(const Canvas& canvas, float discRadius);
-    void disc(const Canvas& canvas, int cx, int cy, float radius);
-    void spectral(const Canvas& canvas, int steps, const AudioFrame& audio);
+    void disc(const Canvas& canvas, int cx, int cy, float radius, float strength);
+    void spectral(const Canvas& canvas, int steps, double frames, const AudioFrame& audio);
+    void advanceSpectral(const AudioFrame& audio);
+    void drawSpectral(const Canvas& canvas, float strength);
     void neutrons(const Canvas& canvas, int steps);
     void crystals(const Canvas& canvas, int steps);
     void edges(const Canvas& canvas);
