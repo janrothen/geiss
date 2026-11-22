@@ -1905,6 +1905,12 @@ void testFourierPower() {
     check(std::all_of(dc.begin(), dc.end(), [](float p) { return p < 1e-3f; }), "a constant offset has no power");
     const auto none = geiss::fourierPower(nullptr, 256, rate);
     check(std::all_of(none.begin(), none.end(), [](float p) { return p == 0.f; }), "no samples, no power");
+
+    // The window keeps the original's 256 samples at 44.1 kHz in time at other rates.
+    check(geiss::fourierWindow(44100.0) == 256, "the colour spectrum reads 256 samples at 44.1 kHz");
+    check(geiss::fourierWindow(48000.0) == 279, "the colour spectrum reads 279 samples at 48 kHz");
+    check(geiss::fourierWindow(96000.0) == 557, "the colour spectrum reads 557 samples at 96 kHz");
+    check(geiss::fourierWindow(0.0) == 256, "an unknown rate reads the original's 256 samples");
 }
 
 void testSmoothedPower() {
@@ -2301,7 +2307,7 @@ void testIdleWave() {
     check(hushed.idleLevel() == 1.f, "faint sound that draws no waveform brings up the idle wave");
 
     // Quiet sound that draws a line dimmer than the idle wave's darkest keeps the idle wave,
-    // so quiet music never looks darker than silence. Volume 8 draws at about 41.
+    // so quiet music never looks darker than silence. Volume 8 is a brightness of about 25.
     geiss::AudioFrame quiet = beatFrame(false, 1.f, 0.f);
     quiet.volume = 8.f;
     quiet.averageVolume = 8.f;
@@ -2320,6 +2326,29 @@ void testIdleWave() {
         beating.tick(1.0 / 30.0, beatFrame(true, 0.f, 0.f));
     }
     check(beating.idleLevel() == 0.f, "beat mode's dark gaps keep the idle wave down");
+
+    // The hand-off compares drawn colors. A bass line at brightness 34 is above the idle wave's
+    // darkest base of 26, but it draws in a red of about 45, while the drift color at base 26
+    // reaches up to 2.5 times that. Whenever the drift is brighter, the line counts as dimmer.
+    std::array<float, geiss::kFourierDetail> bass{};
+    bass[3] = 1.f;
+    const geiss::ColorDrift drift{};
+    bool sawDimmer = false;
+    bool sawBrighter = false;
+    for (int frame = 0; frame < 4000; frame += 7) {
+        const auto t = static_cast<double>(frame);
+        const geiss::Rgb line = geiss::waveColor(34.f, t, drift, bass);
+        const geiss::Rgb idle = geiss::driftColor(26.f, t, drift);
+        const bool dimmer = std::max({line.r, line.g, line.b}) < std::max({idle.r, idle.g, idle.b});
+        check(geiss::drawsDimmerThanIdle(34.f, t, drift, bass) == dimmer,
+              "the idle hand-off follows the brightest drawn channel");
+        sawDimmer = sawDimmer || dimmer;
+        sawBrighter = sawBrighter || !dimmer;
+    }
+    check(sawDimmer, "a bass line above the idle base can still draw dimmer than the idle wave");
+    check(sawBrighter, "a bass line above the idle base draws brighter when the drift is dim");
+    check(!geiss::drawsDimmerThanIdle(155.f, 0.0, drift, bass), "a loud line always replaces the idle wave");
+    check(geiss::drawsDimmerThanIdle(0.f, 0.0, drift, bass), "a dark line never replaces the idle wave");
 
 }
 

@@ -51,6 +51,12 @@ constexpr int kFourierDetail = 24;
 // 15.3 kHz for band 23. Band 0 is never measured, as in the original.
 double fourierBandHz(int band);
 
+// How many samples the colour spectrum reads: the original's 256 at 44.1 kHz, scaled to keep
+// its 5.8 ms at other rates, so 279 at 48 kHz. Inherited limit: the bands up to about 150 Hz
+// (1...7, most of red) finish less than one cycle in that time, so they barely tell bass
+// apart and also rise with low-middle sound. The original looked that way, so it is kept.
+int fourierWindow(double sampleRate);
+
 // One captured block. `samples` is interleaved and owned by the caller.
 struct PcmBlock {
     const float* samples = nullptr;
@@ -92,7 +98,7 @@ struct AudioFrame {
 };
 
 // The original's colour spectrum for one block, unsmoothed: the magnitude of a direct
-// Fourier sum at each band's center over `count` samples (256 in the original), after its
+// Fourier sum at each band's center over `count` samples (see `fourierWindow`), after its
 // 0.8/0.2 smoothing of each sample with the next one and with the mean taken out.
 std::array<float, kFourierDetail> fourierPower(const float* samples, int count, double sampleRate);
 

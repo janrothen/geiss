@@ -708,8 +708,9 @@ void EffectLayer::crystals(const Canvas& canvas, int steps) {
 }
 
 // Mode6Edges: three rows along the top and three along the bottom take noise of 0...39 over a
-// slow wave, so the vortex field pulls a faint, moving texture in from both edges. In
-// truecolor each channel has its own wave of 0...198, so the texture shifts in color.
+// slow wave, so the vortex field pulls a moving texture in from both edges. In truecolor each
+// channel has its own wave of 0...198, as in the original, so the texture shifts in color and
+// its peaks show at full brightness and glow on an HDR screen.
 // The rows are overwritten once per reference frame, so the texture is the same at any refresh.
 void EffectLayer::edges(const Canvas& canvas) {
     const int rows = std::min(3, canvas.height / 2);

@@ -187,8 +187,9 @@ std::array<float, kSpectrumBands> spectrumOf(const std::vector<float>& mono, dou
     return bands;
 }
 
-// The original measured 256 samples of the left channel.
-constexpr int kFourierSamples = 256;
+// The original measured 256 samples of the left channel at 44.1 kHz, about 5.8 ms.
+constexpr double kFourierSamples = 256.0;
+constexpr double kFourierReferenceRate = 44100.0;
 // g_power_smoothed kept 0.94 of its value per frame at 30 fps.
 constexpr double kPowerRetain = 0.94;
 
@@ -198,12 +199,20 @@ bool hasAudioBlock(const PcmBlock& block) {
 
 }  // namespace
 
+int fourierWindow(double sampleRate) {
+    if (!(sampleRate > 0)) {
+        return static_cast<int>(kFourierSamples);
+    }
+    return std::max(2, static_cast<int>(std::lround(kFourierSamples * sampleRate / kFourierReferenceRate)));
+}
+
 double fourierBandHz(int band) {
     return 20.0 * std::pow(2.0, 10.0 * static_cast<double>(band) / static_cast<double>(kFourierDetail));
 }
 
-// Intentional differences: the frequency uses the block's own sample rate and a true 2 pi,
-// where the original assumed 44.1 kHz and wrote 6.28.
+// Intentional differences: the frequency and the window (see `fourierWindow`) follow the
+// block's own sample rate, where the original assumed 44.1 kHz, and 2 pi is exact, where it
+// wrote 6.28.
 std::array<float, kFourierDetail> fourierPower(const float* samples, int count, double sampleRate) {
     std::array<float, kFourierDetail> power{};
     if (samples == nullptr || count < 2 || sampleRate <= 0) {
@@ -308,7 +317,8 @@ AudioFrame Analyzer::analyze(const PcmBlock& block, int columns, float gain) {
     // read the start of its triggered buffer. Its smoothing follows elapsed time.
     std::array<float, kFourierDetail> power{};
     if (!left.empty()) {
-        const std::size_t count = std::min<std::size_t>(kFourierSamples, left.size());
+        const std::size_t count =
+            std::min(static_cast<std::size_t>(fourierWindow(block.sampleRate)), left.size());
         const std::size_t start = std::min(first, left.size() - count);
         power = fourierPower(left.data() + start, static_cast<int>(count), block.sampleRate);
     }

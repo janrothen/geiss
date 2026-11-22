@@ -78,6 +78,8 @@ constexpr float kIdleBright = 36.f;
 constexpr float kIdleBreath = 10.f;
 // The hand-off. Sound whose line would draw dimmer than the idle wave's darkest keeps the
 // idle wave, so quiet music never looks darker than silence; its faint line plays inside it.
+// kIdleHandOff is the idle wave's darkest base. The two are compared as drawn colors (see
+// `drawsDimmerThanIdle`): at the same base the drift color can be twice as bright as a line's.
 // Brighter sound fades the idle wave out over kIdleFadeSeconds instead of cutting it, and
 // while any of it is left, quiet brings it back up without the wait, so sound hovering
 // near the hand-off makes it dip instead of blinking off and on.
@@ -179,6 +181,12 @@ void plotSoftSpot(std::uint8_t* pixels, int width, int height, int x, int y, Rgb
 
 float wrappedPhase(double radiansPerSecond, double seconds) {
     return static_cast<float>(std::fmod(radiansPerSecond * seconds, kTau));
+}
+
+bool drawsDimmerThanIdle(float base, double frames, const ColorDrift& drift,
+                         const std::array<float, kFourierDetail>& power) {
+    const auto brightest = [](Rgb color) { return std::max({color.r, color.g, color.b}); };
+    return brightest(waveColor(base, frames, drift, power)) < brightest(driftColor(kIdleHandOff, frames, drift));
 }
 
 namespace {
@@ -581,7 +589,8 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     soundActive_ = !audio.silent && !audio.samples.empty();
     // Sound whose line would draw dimmer than the idle wave counts as quiet for it. The beat
     // scale is left out, so the dark gaps between hits in beat mode do not bring it up.
-    const bool faint = !soundActive_ || waveBrightness(audio.volume, audio.averageVolume) < kIdleHandOff;
+    const bool faint = !soundActive_ || drawsDimmerThanIdle(waveBrightness(audio.volume, audio.averageVolume),
+                                                            motionTime_ * kReferenceFps, drift_, audio.power);
     faintSeconds_ = faint ? faintSeconds_ + dt : 0;
     if (!locked_) {
         mapElapsed_ += dt;
