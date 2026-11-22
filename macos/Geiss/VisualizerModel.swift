@@ -224,6 +224,8 @@ final class VisualizerModel: ObservableObject {
         ) { texture in
             bridge.expand(into: texture)
         }
+        // Starts the next frame's warp now, so the GPU runs it while this frame is shown.
+        bridge.prepareNextFrame()
         countFrame(at: time)
     }
 

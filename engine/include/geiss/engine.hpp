@@ -174,11 +174,25 @@ public:
     // The returned pointer is valid until the next tick or resize.
     FrameView tick(double dt, const AudioFrame& audio);
 
+    // With a warp runner that has `wait`, draws the next frame's effects and starts its warp
+    // now, so the warp runs between frames and the next tick only finishes it. Call it after
+    // the host has finished reading the frame the last tick returned, since the effects draw
+    // into it, as the original drew them into the frame it had just shown. The effects take
+    // this audio and the warp the last tick's time step, one frame earlier than an unpipelined
+    // tick would. Does nothing while paused, before the first moving tick after a resize, or
+    // without `wait`; the next tick then draws the effects and warps itself.
+    void startNextWarp(const AudioFrame& audio);
+    // Waits for a warp that `startNextWarp` started. The engine calls it itself before it
+    // touches the frames or the map; a host calls it before it stops serving the warp runner.
+    void finishWarp();
+
 private:
     void pickLook();
     void pickEffects();
     void rebuildMap();
     void expandPixels(const std::uint8_t* pixels);
+    // Draws the effects into the front frame and starts its warp into the back frame.
+    void drawEffectsAndWarp(double dt, const AudioFrame& audio);
     void updateIdle(double dt);
     void drawIdleWave();
 
@@ -196,6 +210,12 @@ private:
     bool frameChanged_ = true;
     BandRunner bands_{};
     WarpRunner warp_{};
+    // The last moving tick's time step, which `startNextWarp` uses. 0 after a resize.
+    double lastDt_ = 0;
+    // The warp runner has not finished the warp it was given; see `WarpRunner::wait`.
+    bool warpPending_ = false;
+    // The back frame holds, or will once the warp finishes, the next frame's effects and warp.
+    bool warpReady_ = false;
     bool hostExpands_ = false;
     std::uint64_t generation_ = 0;
     MapParameters mapParameters_{};

@@ -79,9 +79,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)useGPUWithLibrary:(id<MTLLibrary>)library queue:(id<MTLCommandQueue>)queue check:(BOOL)check;
 @property (nonatomic, readonly) BOOL usesGPU;
 // GPU path only: expands the latest frame into `texture` (rgba8Unorm, shader-writable, the size
-// of the frame) and commits that work. The next tick waits for it before drawing into the
-// frame again. Returns NO when there is no frame to expand.
+// of the frame) and commits that work. prepareNextFrame and the next tick wait for it before
+// drawing into the frame again. Returns NO when there is no frame to expand.
 - (BOOL)expandIntoTexture:(id<MTLTexture>)texture;
+// GPU path only: call after presenting each tick's frame. Waits for its expansion, draws the
+// next frame's effects, and starts the next frame's warp, so the GPU warps between frames
+// and the next tick only waits for a finished warp. Does nothing on the CPU path.
+- (void)prepareNextFrame;
 - (void)ingestInterleaved:(const float * _Nullable)samples
                 frameCount:(int)frameCount
                   channels:(int)channels

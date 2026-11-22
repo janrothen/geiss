@@ -472,6 +472,10 @@ void Engine::resize(int width, int height) {
     if (width == width_ && height == height_) {
         return;
     }
+    // The buffers are about to change, so a running warp must finish, and its frame is lost.
+    finishWarp();
+    warpReady_ = false;
+    lastDt_ = 0;
     const int oldWidth = width_;
     const int oldHeight = height_;
     width_ = width;
@@ -545,6 +549,8 @@ void Engine::nextVisual() {
 }
 
 void Engine::rebuildMap() {
+    // A started warp keeps the map it began with.
+    finishWarp();
     if (map_.size() == static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_)) {
         buildMap(map_.data(), width_, height_, mapParameters_, bands_);
     }
@@ -615,6 +621,8 @@ void Engine::expandPixels(const std::uint8_t* pixels) {
 }
 
 FrameView Engine::tick(double dt, const AudioFrame& audio) {
+    // A warp started after the last tick has had the time between frames to run.
+    finishWarp();
     FrameView view;
     view.rgba = hostExpands_ ? nullptr : rgba_.data();
     view.pixels = front_.data();
@@ -649,11 +657,31 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     }
 
     motionTime_ += dt;
+    // The shift keeps following peaks while locked, like the rest of the audio motion.
+    slideShift_.update(dt, audio, width_);
+    if (!warpReady_) {
+        drawEffectsAndWarp(dt, audio);
+    }
+    finishWarp();
+    warpReady_ = false;
+    if (!effects_.hideWaveform) {
+        drawWaveform(back_.data(), width_, height_, audio, waveform_, mapParameters_.mode, mapParameters_.centerXNorm,
+                     mapParameters_.centerYNorm, static_cast<float>(motionTime_), motionTime_ * kReferenceFps, drift_);
+    }
+    updateIdle(dt);
+    drawIdleWave();
+    expandPixels(back_.data());
+    front_.swap(back_);
+    frameChanged_ = false;
+    lastDt_ = dt;
+    view.pixels = front_.data();
+    return view;
+}
+
+void Engine::drawEffectsAndWarp(double dt, const AudioFrame& audio) {
     // Dampened modes move half as far per frame, as mode_motion_dampened did.
     const float frameStep = static_cast<float>(std::min(dt * kReferenceFps, 1.0));
     const float step = frameStep * mapParameters_.damping;
-    // The shift keeps following peaks while locked, like the rest of the audio motion.
-    slideShift_.update(dt, audio, width_);
     const float perReferenceFrame =
         static_cast<float>(weightNumerator(width_, height_)) / 256.f * mapParameters_.decay;
     const float decay = static_cast<float>(std::pow(static_cast<double>(perReferenceFrame), dt * kReferenceFps));
@@ -675,21 +703,27 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
                        ++ditherSeed_};
     if (warp_.run != nullptr) {
         warp_.run(warp_.host, warp);
+        warpPending_ = warp_.wait != nullptr;
     } else {
         warpPixels(warp.src, warp.dst, warp.width, warp.height, warp.map, warp.step, warp.decay, warp.shiftX,
                    warp.shiftY, warp.ditherSeed, bands_);
     }
-    if (!effects_.hideWaveform) {
-        drawWaveform(back_.data(), width_, height_, audio, waveform_, mapParameters_.mode, mapParameters_.centerXNorm,
-                     mapParameters_.centerYNorm, static_cast<float>(motionTime_), motionTime_ * kReferenceFps, drift_);
+    warpReady_ = true;
+}
+
+void Engine::startNextWarp(const AudioFrame& audio) {
+    if (warp_.run == nullptr || warp_.wait == nullptr || paused_ || warpReady_ || lastDt_ <= 0 || width_ < 2 ||
+        height_ < 2) {
+        return;
     }
-    updateIdle(dt);
-    drawIdleWave();
-    expandPixels(back_.data());
-    front_.swap(back_);
-    frameChanged_ = false;
-    view.pixels = front_.data();
-    return view;
+    drawEffectsAndWarp(lastDt_, audio);
+}
+
+void Engine::finishWarp() {
+    if (warpPending_) {
+        warpPending_ = false;
+        warp_.wait(warp_.host);
+    }
 }
 
 void Engine::updateIdle(double dt) {

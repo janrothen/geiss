@@ -184,14 +184,20 @@ struct WarpJob {
     std::uint32_t ditherSeed = 0;
 };
 
-// Lets a host run the engine's warp elsewhere, such as on a GPU. `run` must leave `job.dst`
-// complete when it returns, as `warpPixels` would have written it. Without a host the engine
+// Lets a host run the engine's warp elsewhere, such as on a GPU. Without a host the engine
 // calls `warpPixels` with its band runner.
+// Without `wait`, `run` must leave `job.dst` complete when it returns, as `warpPixels` would
+// have written it. With `wait`, `run` may return at once and finish the warp later: the engine
+// calls `wait` before it touches `job.src`, `job.dst`, or `job.map` again, and `wait` returns
+// with `job.dst` complete. Such a host can let the engine start each frame's warp at the end
+// of the frame before (see `Engine::startNextWarp`).
 struct WarpRunner {
     using Run = void (*)(void* host, const WarpJob& job);
+    using Wait = void (*)(void* host);
 
     Run run = nullptr;
     void* host = nullptr;
+    Wait wait = nullptr;
 };
 
 // Wraps a source column into 0...width-1, as the warp does: the original's newx stepped by

@@ -53,6 +53,7 @@ Copyright (c) 1998-2022 Ryan Geiss. The picture engine and this app are licensed
 |---|---|
 | The window stays black | Wait a moment, or press Resume if the picture is paused. In silence a faint wave appears after about two seconds. If the picture shows only that faint wave while music plays, Geiss lacks permission: see the next rows. |
 | The info readout shows far fewer frames per second than the display's rate | Rebuild with the command above. Both build configurations compile the engine with optimization; an unoptimized engine manages only about 30 fps at 960 wide on the CPU path. |
+| The info readout's FPS dips a few frames below the display's rate, for example 112 at 120 Hz | Other apps drawing on the GPU, such as a browser playing video or WebGL, slow Geiss's GPU work. Close or hide them, and check Activity Monitor's GPU History. |
 | The info readout's SIM row says CPU warp | The GPU kernels did not load, or the app was started with `-GeissCPUWarp YES`. The CPU path caps the picture at 960 wide. |
 | You want to compare the GPU warp with the CPU's | Start the app from Terminal with `-GeissWarpCheck YES`. Every two seconds or so it prints the largest difference (expect 0) and the time per tick. |
 | The picture looks stretched or soft while resizing | Expected. The simulation keeps its size until the window has stayed still for a moment, then sharpens. |

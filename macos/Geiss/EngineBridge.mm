@@ -97,8 +97,10 @@ constexpr int kCheckInterval = 120;
 - (nullable instancetype)initWithLibrary:(id<MTLLibrary>)library queue:(id<MTLCommandQueue>)queue;
 // Wraps the engine's buffers again when a resize made new ones.
 - (void)adopt:(const geiss::EngineBuffers &)buffers;
-// Runs one warp and returns when it is done.
+// Commits one warp and returns at once; finishWarp waits for it.
 - (void)warp:(const geiss::WarpJob &)job;
+// Waits for the last committed warp and, with `check`, compares it with the CPU warp.
+- (void)finishWarp;
 - (BOOL)expand:(const uint8_t *)pixels width:(int)width height:(int)height into:(id<MTLTexture>)texture;
 // Waits until the last expansion has finished reading the frame.
 - (void)waitForReaders;
@@ -106,6 +108,8 @@ constexpr int kCheckInterval = 120;
 @property (nonatomic) BOOL check;
 // With `check`, adds one tick's main-thread time, printed with the next warp check.
 - (void)recordTick:(double)milliseconds;
+// With `check`, adds main-thread time to the current tick's, such as starting the next warp.
+- (void)recordTickExtra:(double)milliseconds;
 // With `check`, the latest audio's peak and whether it counted as silence, printed with the
 // next warp check, so a check run also shows whether the tap hears anything.
 - (void)recordAudioPeak:(float)peak silent:(BOOL)silent;
@@ -126,6 +130,11 @@ constexpr int kCheckInterval = 120;
     BOOL adopted_;
     BOOL reportedSkip_;
     id<MTLCommandBuffer> lastReader_;
+    id<MTLCommandBuffer> pendingWarp_;
+    BOOL checkingWarp_;
+    std::uint8_t* checkedDst_;
+    int checkedWidth_;
+    int checkedHeight_;
     int warps_;
     std::vector<uint8_t> reference_;
     double tickMilliseconds_;
@@ -142,6 +151,10 @@ constexpr int kCheckInterval = 120;
 - (void)recordTick:(double)milliseconds {
     tickMilliseconds_ += milliseconds;
     ++ticks_;
+}
+
+- (void)recordTickExtra:(double)milliseconds {
+    tickMilliseconds_ += milliseconds;
 }
 
 - (instancetype)initWithLibrary:(id<MTLLibrary>)library queue:(id<MTLCommandQueue>)queue {
@@ -225,6 +238,7 @@ constexpr int kCheckInterval = 120;
         return;
     }
     const bool checking = _check && (warps_++ % kCheckInterval) == 0;
+    // The reference reads the source now, before the engine draws into anything again.
     if (checking) {
         reference_.resize(static_cast<std::size_t>(job.width) * static_cast<std::size_t>(job.height) * geiss::kPixelBytes);
         geiss::warpPixels(job.src, reference_.data(), job.width, job.height, job.map, job.step, job.decay, job.shiftX,
@@ -239,24 +253,39 @@ constexpr int kCheckInterval = 120;
     [self dispatch:encoder pipeline:warp_ width:job.width height:job.height];
     [encoder endEncoding];
     [commands commit];
-    [commands waitUntilCompleted];
-    if (checking) {
-        int largest = 0;
-        std::size_t over = 0;
-        for (std::size_t i = 0; i < reference_.size(); ++i) {
-            const int difference = std::abs(static_cast<int>(reference_[i]) - static_cast<int>(job.dst[i]));
-            largest = std::max(largest, difference);
-            over += difference > 1 ? 1 : 0;
-        }
-        std::printf("Geiss warp check: %dx%d, largest difference %d, %zu bytes above 1, %.3f ms GPU, "
-                    "%.3f ms per tick on the main thread, audio peak %.3f%s\n",
-                    job.width, job.height, largest, over, (commands.GPUEndTime - commands.GPUStartTime) * 1000.0,
-                    ticks_ > 0 ? tickMilliseconds_ / ticks_ : 0.0, peak_, silent_ ? " (silent)" : "");
-        tickMilliseconds_ = 0;
-        ticks_ = 0;
-        peak_ = 0;
-        std::fflush(stdout);
+    pendingWarp_ = commands;
+    checkingWarp_ = checking ? YES : NO;
+    checkedDst_ = job.dst;
+    checkedWidth_ = job.width;
+    checkedHeight_ = job.height;
+}
+
+- (void)finishWarp {
+    id<MTLCommandBuffer> commands = pendingWarp_;
+    if (commands == nil) {
+        return;
     }
+    pendingWarp_ = nil;
+    [commands waitUntilCompleted];
+    if (!checkingWarp_) {
+        return;
+    }
+    checkingWarp_ = NO;
+    int largest = 0;
+    std::size_t over = 0;
+    for (std::size_t i = 0; i < reference_.size(); ++i) {
+        const int difference = std::abs(static_cast<int>(reference_[i]) - static_cast<int>(checkedDst_[i]));
+        largest = std::max(largest, difference);
+        over += difference > 1 ? 1 : 0;
+    }
+    std::printf("Geiss warp check: %dx%d, largest difference %d, %zu bytes above 1, %.3f ms GPU, "
+                "%.3f ms per tick on the main thread, audio peak %.3f%s\n",
+                checkedWidth_, checkedHeight_, largest, over, (commands.GPUEndTime - commands.GPUStartTime) * 1000.0,
+                ticks_ > 0 ? tickMilliseconds_ / ticks_ : 0.0, peak_, silent_ ? " (silent)" : "");
+    tickMilliseconds_ = 0;
+    ticks_ = 0;
+    peak_ = 0;
+    std::fflush(stdout);
 }
 
 - (BOOL)expand:(const uint8_t *)pixels width:(int)width height:(int)height into:(id<MTLTexture>)texture {
@@ -292,6 +321,10 @@ namespace {
 
 void runWarpOnGPU(void* host, const geiss::WarpJob& job) {
     [(__bridge GeissGPU*)host warp:job];
+}
+
+void finishWarpOnGPU(void* host) {
+    [(__bridge GeissGPU*)host finishWarp];
 }
 
 }  // namespace
@@ -351,6 +384,13 @@ void runWarpOnGPU(void* host, const geiss::WarpJob& job) {
     return self;
 }
 
+- (void)dealloc {
+    // A started warp writes into the engine's frames, so it must finish before they go.
+    if (engine_ != nullptr) {
+        engine_->finishWarp();
+    }
+}
+
 - (void)setSensitivity:(float)sensitivity {
     gain_ = sensitivity < 0 ? 0 : sensitivity;
 }
@@ -383,7 +423,7 @@ void runWarpOnGPU(void* host, const geiss::WarpJob& job) {
     gpu.check = check;
     gpu_ = gpu;
     [gpu_ adopt:engine_->buffers()];
-    engine_->setWarpRunner(geiss::WarpRunner{runWarpOnGPU, (__bridge void*)gpu_});
+    engine_->setWarpRunner(geiss::WarpRunner{runWarpOnGPU, (__bridge void*)gpu_, finishWarpOnGPU});
     engine_->setHostExpands(true);
     return YES;
 }
@@ -397,6 +437,19 @@ void runWarpOnGPU(void* host, const geiss::WarpJob& job) {
         return NO;
     }
     return [gpu_ expand:shown_ width:shownWidth_ height:shownHeight_ into:texture];
+}
+
+- (void)prepareNextFrame {
+    if (gpu_ == nil) {
+        return;
+    }
+    const CFTimeInterval start = CACurrentMediaTime();
+    // The effects draw into the frame just shown, so its expansion must have read it.
+    [gpu_ waitForReaders];
+    engine_->startNextWarp(frame_);
+    if (gpu_.check) {
+        [gpu_ recordTickExtra:(CACurrentMediaTime() - start) * 1000.0];
+    }
 }
 
 - (void)ingestInterleaved:(const float *)samples

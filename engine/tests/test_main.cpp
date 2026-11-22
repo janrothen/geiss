@@ -612,6 +612,105 @@ void testWarpRunner() {
     check(warp.jobs.size() == 30, "a paused tick runs no warp");
 }
 
+// A warp that finishes only when the engine waits for it. Until then the destination holds
+// junk, so a picture that read it early would show.
+struct DeferredWarp {
+    std::vector<geiss::WarpJob> jobs;
+    int waits = 0;
+    bool pending = false;
+    static void run(void* host, const geiss::WarpJob& job) {
+        auto& self = *static_cast<DeferredWarp*>(host);
+        self.jobs.push_back(job);
+        self.pending = true;
+        std::fill(job.dst, job.dst + static_cast<std::size_t>(job.width) * job.height * geiss::kPixelBytes,
+                  std::uint8_t{0xAB});
+    }
+    static void wait(void* host) {
+        auto& self = *static_cast<DeferredWarp*>(host);
+        ++self.waits;
+        if (self.pending) {
+            const geiss::WarpJob& job = self.jobs.back();
+            geiss::warpPixels(job.src, job.dst, job.width, job.height, job.map, job.step, job.decay, job.shiftX,
+                              job.shiftY, job.ditherSeed);
+            self.pending = false;
+        }
+    }
+    geiss::WarpRunner runner() { return geiss::WarpRunner{&DeferredWarp::run, this, &DeferredWarp::wait}; }
+};
+
+void testPipelinedWarp() {
+    geiss::AudioFrame audio;
+    audio.volume = 100.f;
+    audio.averageVolume = 100.f;
+    audio.samples.resize(80);
+    for (int i = 0; i < 80; ++i) {
+        audio.samples[static_cast<std::size_t>(i)] = std::sin(static_cast<float>(i) * 0.3f);
+    }
+    // With a steady time step and steady sound, starting each warp a frame early changes nothing.
+    geiss::Engine plain(23);
+    geiss::Engine piped(23);
+    DeferredWarp warp;
+    piped.setWarpRunner(warp.runner());
+    plain.resize(80, 45);
+    piped.resize(80, 45);
+    plain.setSlideShiftAllowed(false);
+    piped.setSlideShiftAllowed(false);
+    bool same = true;
+    for (int frame = 0; frame < 30; ++frame) {
+        const geiss::FrameView a = plain.tick(1.0 / 60.0, audio);
+        const geiss::FrameView b = piped.tick(1.0 / 60.0, audio);
+        same = same && std::equal(a.rgba, a.rgba + static_cast<std::size_t>(a.width) * a.height * 4, b.rgba);
+        piped.startNextWarp(audio);
+    }
+    check(same, "a warp started at the end of the frame before draws the same pictures");
+    check(warp.jobs.size() == 31, "each frame's warp starts once, the first in its own tick");
+    check(warp.pending && warp.waits == 30, "the warp started after a tick runs until the next tick waits for it");
+
+    // Without wait, the next tick warps itself.
+    geiss::Engine synchronous(23);
+    RecordingWarp recording;
+    synchronous.setWarpRunner(recording.runner());
+    synchronous.resize(80, 45);
+    synchronous.tick(1.0 / 60.0, audio);
+    synchronous.startNextWarp(audio);
+    check(recording.jobs.size() == 1, "a warp runner without wait starts no warp early");
+
+    // Before the first moving tick there is no time step to warp with.
+    geiss::Engine fresh(23);
+    DeferredWarp unused;
+    fresh.setWarpRunner(unused.runner());
+    fresh.resize(80, 45);
+    fresh.startNextWarp(audio);
+    check(unused.jobs.empty(), "no warp starts before the first moving tick");
+
+    // Pause holds the started warp, and starts none.
+    const std::size_t started = warp.jobs.size();
+    piped.setPaused(true);
+    piped.tick(1.0 / 60.0, audio);
+    piped.startNextWarp(audio);
+    check(warp.jobs.size() == started && !warp.pending, "a paused engine finishes the started warp and starts none");
+    piped.setPaused(false);
+    piped.tick(1.0 / 60.0, audio);
+    check(warp.jobs.size() == started, "resuming shows the warp started before the pause");
+
+    // A new look and a resize wait for the running warp before they rewrite its map and frames.
+    piped.startNextWarp(audio);
+    check(warp.pending, "a warp is running");
+    piped.nextVisual();
+    check(!warp.pending, "a new look waits for the running warp before building its map");
+    piped.tick(1.0 / 60.0, audio);
+    piped.startNextWarp(audio);
+    piped.resize(64, 36);
+    check(!warp.pending, "a resize waits for the running warp before replacing the frames");
+    const std::size_t beforeResizedTick = warp.jobs.size();
+    const geiss::FrameView resized = piped.tick(1.0 / 60.0, audio);
+    check(warp.jobs.size() == beforeResizedTick + 1 && warp.jobs.back().width == 64 && resized.width == 64,
+          "the first tick after a resize warps the new size itself");
+    piped.startNextWarp(audio);
+    piped.finishWarp();
+    check(!warp.pending, "finishWarp waits for the running warp");
+}
+
 void testSharedBuffers() {
     geiss::Engine engine(3);
     engine.resize(100, 60);
@@ -2626,6 +2725,7 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testBandsMatchSerial();
     testFrameChanged();
     testWarpRunner();
+    testPipelinedWarp();
     testSharedBuffers();
     testHostExpands();
     if (failures != 0) {
