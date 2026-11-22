@@ -45,6 +45,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -123,6 +124,7 @@ constexpr int kCheckInterval = 120;
     const uint8_t* addressB_;
     uint64_t generation_;
     BOOL adopted_;
+    BOOL reportedSkip_;
     id<MTLCommandBuffer> lastReader_;
     int warps_;
     std::vector<uint8_t> reference_;
@@ -208,10 +210,18 @@ constexpr int kCheckInterval = 120;
     id<MTLBuffer> dst = [self bufferFor:job.dst];
     id<MTLCommandBuffer> commands = [queue_ commandBuffer];
     id<MTLComputeCommandEncoder> encoder = [commands computeCommandEncoder];
-    if (src == nil || dst == nil || commands == nil || encoder == nil) {
+    if (src == nil || dst == nil || map_ == nil || commands == nil || encoder == nil) {
+        // Buffers that do not match the engine's mean the bridge missed a resize, a bug to fix
+        // rather than hide. Without a command buffer the GPU is failing. Either way the frame
+        // holds still for this tick: the destination gets the source unwarped.
+        NSAssert(NO, @"GPU warp cannot run: buffers %@ %@ %@, commands %@", src, dst, map_, commands);
+        if (!reportedSkip_) {
+            NSLog(@"Geiss: GPU warp skipped a frame (buffers or command buffer unavailable)");
+            reportedSkip_ = YES;
+        }
         [encoder endEncoding];
-        geiss::warpPixels(job.src, job.dst, job.width, job.height, job.map, job.step, job.decay, job.shiftX,
-                          job.shiftY, job.ditherSeed);
+        std::memcpy(job.dst, job.src,
+                    static_cast<std::size_t>(job.width) * static_cast<std::size_t>(job.height) * geiss::kPixelBytes);
         return;
     }
     const bool checking = _check && (warps_++ % kCheckInterval) == 0;
