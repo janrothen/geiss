@@ -52,6 +52,9 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     private var views: [MTLTexture] = []
     private var textureIndex = 0
     private var texture: MTLTexture?
+    /// True when the last changed frame never reached a texture, so an unchanged frame after it
+    /// fills one again instead of redrawing an older picture.
+    private var fillPending = false
     private let inFlight = DispatchSemaphore(value: textureCount)
     /// True between an upload's wait and the draw that releases that slot.
     private var slotHeld = false
@@ -93,9 +96,17 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         else {
             fatalError("The Metal shaders are missing.")
         }
+        // Without fast math, so the warp kernel rounds like the CPU warp it ports.
+        let options = MTLCompileOptions()
+        if #available(macOS 15, *) {
+            options.mathMode = .safe
+            options.mathFloatingPointFunctions = .precise
+        } else {
+            options.fastMathEnabled = false
+        }
         let library: MTLLibrary
         do {
-            library = try device.makeLibrary(source: source, options: nil)
+            library = try device.makeLibrary(source: source, options: options)
         } catch {
             fatalError("The Metal shaders do not compile: \(error)")
         }
@@ -137,7 +148,7 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         expand: (MTLTexture) -> Bool
     ) {
         guard width > 0, height > 0 else { return }
-        if !changed, let texture, texture.width == width, texture.height == height {
+        if !changed, !fillPending, let texture, texture.width == width, texture.height == height {
             redraw()
             return
         }
@@ -183,15 +194,18 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
             textureIndex = 0
         }
         guard !textures.isEmpty, views.count == textures.count else {
+            fillPending = true
             releaseSlot()
             return
         }
         let index = textureIndex
         textureIndex = (textureIndex + 1) % textures.count
         guard fill(textures[index]) else {
+            fillPending = true
             releaseSlot()
             return
         }
+        fillPending = false
         texture = views[index]
         if let view {
             view.draw()

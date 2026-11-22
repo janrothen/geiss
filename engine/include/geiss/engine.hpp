@@ -137,8 +137,9 @@ public:
     // with its band runner. The picture is the same up to the warp's own rounding.
     void setWarpRunner(const WarpRunner& warp) { warp_ = warp; }
     // When true, the engine leaves the expansion to RGBA to the host: each view carries the
-    // simulation pixels, and `rgba` is null. Off by default.
-    void setHostExpands(bool hostExpands) { hostExpands_ = hostExpands; }
+    // simulation pixels, and `rgba` is null. Off by default. Switching it back on the engine
+    // expands the current frame again, so the next view is complete.
+    void setHostExpands(bool hostExpands);
     EngineBuffers buffers();
 
     bool paused() const { return paused_; }

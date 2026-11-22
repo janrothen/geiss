@@ -580,6 +580,16 @@ std::array<std::uint8_t, 4> displayPixel(const std::uint8_t* pixel) {
     return {kDisplayLevels[pixel[0]], kDisplayLevels[pixel[1]], kDisplayLevels[pixel[2]], static_cast<std::uint8_t>(level)};
 }
 
+void Engine::setHostExpands(bool hostExpands) {
+    if (hostExpands == hostExpands_) {
+        return;
+    }
+    hostExpands_ = hostExpands;
+    const std::size_t count = static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
+    rgba_.assign(hostExpands_ ? 0 : count * 4, 0);
+    expandPixels(front_.data());
+}
+
 EngineBuffers Engine::buffers() {
     EngineBuffers buffers;
     buffers.pixelsA = front_.data();
@@ -652,8 +662,17 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
                       mapParameters_.centerXNorm * static_cast<float>(width_),
                       mapParameters_.centerYNorm * static_cast<float>(height_), dt * kReferenceFps, audio);
     // The original added slider1 to the source pointer once per frame, whatever the map's damping.
-    const WarpJob warp{front_.data(), back_.data(), width_, height_, map_.data(), step, decay,
-                       slideShift_.x() * frameStep, slideShift_.y() * frameStep, ++ditherSeed_};
+    // Clamped here as warpPixels clamps them, so a host warp sees the same values.
+    const WarpJob warp{front_.data(),
+                       back_.data(),
+                       width_,
+                       height_,
+                       map_.data(),
+                       std::clamp(step, 0.f, 1.f),
+                       std::clamp(decay, 0.f, 1.f),
+                       slideShift_.x() * frameStep,
+                       slideShift_.y() * frameStep,
+                       ++ditherSeed_};
     if (warp_.run != nullptr) {
         warp_.run(warp_.host, warp);
     } else {

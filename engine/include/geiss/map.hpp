@@ -169,7 +169,8 @@ void warpPixels(const std::uint8_t* src, std::uint8_t* dst, int width, int heigh
                 const SourcePoint* map, float step, float decay, float shiftX = 0, float shiftY = 0,
                 std::uint32_t ditherSeed = 0, const BandRunner& bands = {});
 
-// One warp of a whole frame, as `warpPixels` takes it.
+// One warp of a whole frame, as `warpPixels` takes it. The engine passes `step` and `decay`
+// already clamped to 0...1, as `warpPixels` would clamp them.
 struct WarpJob {
     const std::uint8_t* src = nullptr;
     std::uint8_t* dst = nullptr;

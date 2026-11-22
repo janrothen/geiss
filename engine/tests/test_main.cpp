@@ -601,6 +601,11 @@ void testWarpRunner() {
     check(last.dst == buffers.pixelsA && last.src == buffers.pixelsB, "a warp reads one shared buffer and writes the other");
     check(warp.jobs[0].ditherSeed != warp.jobs[1].ditherSeed, "each warp gets a new rounding pattern");
     check(last.decay > 0.f && last.decay < 1.f && last.step > 0.f, "a warp job carries the decay and the step");
+    check(std::all_of(warp.jobs.begin(), warp.jobs.end(),
+                      [](const geiss::WarpJob& job) {
+                          return job.step >= 0.f && job.step <= 1.f && job.decay >= 0.f && job.decay <= 1.f;
+                      }),
+          "a warp job's step and decay are clamped as warpPixels clamps them");
 
     hosted.setPaused(true);
     hosted.tick(1.0 / 60.0, audio);
@@ -653,6 +658,21 @@ void testHostExpands() {
         same = same && std::equal(shown.begin(), shown.end(), a.rgba + i * 4);
     }
     check(same, "host-expanded pixels show what the engine's own expansion does");
+
+    // Handing the expansion back after a resize gives a complete RGBA view again.
+    host.resize(72, 40);
+    host.setHostExpands(false);
+    host.setPaused(true);
+    const geiss::FrameView back = host.tick(1.0 / 30.0, audio);
+    bool expanded = back.rgba != nullptr && back.changed;
+    for (std::size_t i = 0; expanded && i < static_cast<std::size_t>(back.width) * back.height; ++i) {
+        const auto shown = geiss::displayPixel(back.pixels + i * geiss::kPixelBytes);
+        expanded = std::equal(shown.begin(), shown.end(), back.rgba + i * 4);
+    }
+    check(expanded, "turning host expansion off expands the current frame again");
+    host.setPaused(false);
+    const geiss::FrameView moving = host.tick(1.0 / 30.0, audio);
+    check(moving.rgba != nullptr && moving.width == 72, "a moving tick after it fills the RGBA view");
 }
 
 unsigned colorSum(const geiss::FrameView& frame) {
