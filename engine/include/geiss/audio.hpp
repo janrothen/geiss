@@ -44,6 +44,19 @@ namespace geiss {
 // Bass, middle, and treble, for the spectral dots.
 constexpr int kSpectrumBands = 3;
 
+// FOURIER_DETAIL: the bands of the original's colour spectrum.
+constexpr int kFourierDetail = 24;
+
+// Center of colour band `band`, 20 * 2^(10 * band / 24) Hz: about 27 Hz for band 1 up to
+// 15.3 kHz for band 23. Band 0 is never measured, as in the original.
+double fourierBandHz(int band);
+
+// How many samples the colour spectrum reads: the original's 256 at 44.1 kHz, scaled to keep
+// its 5.8 ms at other rates, so 279 at 48 kHz. Inherited limit: the bands up to about 150 Hz
+// (1...7, most of red) finish less than one cycle in that time, so they barely tell bass
+// apart and also rise with low-middle sound. The original looked that way, so it is kept.
+int fourierWindow(double sampleRate);
+
 // One captured block. `samples` is interleaved and owned by the caller.
 struct PcmBlock {
     const float* samples = nullptr;
@@ -79,7 +92,15 @@ struct AudioFrame {
     // the original's spectral dots, 0...255: the mean absolute level over the newest 1/30 s,
     // after gain, weighted up toward the treble.
     std::array<float, kSpectrumBands> spectrum{};
+    // g_power_smoothed: the strength of each colour band, smoothed over about half a second.
+    // Band 0 stays 0. Only the bands' proportions matter; the wave colour normalizes them.
+    std::array<float, kFourierDetail> power{};
 };
+
+// The original's colour spectrum for one block, unsmoothed: the magnitude of a direct
+// Fourier sum at each band's center over `count` samples (see `fourierWindow`), after its
+// 0.8/0.2 smoothing of each sample with the next one and with the mean taken out.
+std::array<float, kFourierDetail> fourierPower(const float* samples, int count, double sampleRate);
 
 // Turns PCM into an AudioFrame, including the beat state from BeatDetector.
 // The columns span columns / 88200 s of the newest audio, as the original's one stereo
@@ -96,6 +117,7 @@ public:
 private:
     BeatDetector beat_;
     float averageVolume_ = 0;
+    std::array<float, kFourierDetail> power_{};
     double silenceHeld_ = 0;
     double lastTime_ = 0;
     bool hasLastTime_ = false;

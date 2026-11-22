@@ -36,9 +36,9 @@
 
 #include "geiss/audio.hpp"
 #include "geiss/bands.hpp"
+#include "geiss/color.hpp"
 #include "geiss/effects.hpp"
 #include "geiss/map.hpp"
-#include "geiss/palette.hpp"
 #include "geiss/shift.hpp"
 
 #include <array>
@@ -58,16 +58,26 @@ struct Look {
     int waveform = 1;
 };
 
-// Max-blends a soft 5x5 spot centered on (x, y) into an index buffer: `bright` at the center,
-// about two thirds of it beside, falling to a twentieth at the corners. Clipped at the edges.
+// Max-blends a soft 5x5 spot centered on (x, y) into a pixel buffer (kPixelBytes per pixel),
+// per channel: `color` at the center, about two thirds of it beside, falling to a twentieth at
+// the corners. Clipped at the edges.
 // The idle wave draws its points this way, so points up to about three pixels apart, such as
 // the circle's at a large radius, run together into a soft line instead of a row of dots.
-void plotSoftSpot(std::uint8_t* indices, int width, int height, int x, int y, int bright);
+void plotSoftSpot(std::uint8_t* pixels, int width, int height, int x, int y, Rgb color);
 
 // radiansPerSecond * seconds, worked out in double and wrapped to within one turn of zero
 // (keeping its sign) before narrowing to float. The idle wave's drift uses it, so its motion
 // stays smooth however long the engine has run.
 float wrappedPhase(double radiansPerSecond, double seconds);
+
+// The idle wave's hand-off: whether a line of brightness `base` (0...155, RenderWave's scale,
+// before the beat scale) in the wave color would draw dimmer than the idle wave at its darkest,
+// the line at `frames` reference frames. It compares the colors as drawn, by their brightest
+// channel, since the drift color the idle wave uses sits further above its base than the
+// spectrum color of a sound's line. The idle side is the drift's average over time, about 41,
+// so the threshold holds still while the drift wanders.
+bool drawsDimmerThanIdle(float base, double frames, const ColorDrift& drift,
+                         const std::array<float, kFourierDetail>& power);
 
 // False for the map and waveform pairs the original re-rolls, and for unknown numbers.
 bool lookAllowed(int mode, int waveform);
@@ -76,8 +86,11 @@ bool lookAllowed(int mode, int waveform);
 // with 6 less likely, re-rolled until the pair is allowed.
 Look randomLook(Random& random);
 
-// RGB is the palette color. Alpha carries the pixel's highlight level (see `highlightLevels`),
-// so a presenter can pick out the highlights. The picture itself is opaque.
+// RGB is the simulated color, doubled with saturation as the original's truecolor blit showed
+// it. Alpha carries the pixel's highlight level, rising from 0 to 255 as its brightest stored
+// channel goes from 128 to 208, so a presenter can pick out the hottest cores. It is scaled by
+// the share of that channel not held to SDR (see kHeldByte), so fixed textures never glow.
+// The picture itself is opaque.
 struct FrameView {
     const std::uint8_t* rgba = nullptr;
     int width = 0;
@@ -87,7 +100,11 @@ struct FrameView {
     bool changed = true;
 };
 
-// Index-buffer feedback picture. Metal receives only the RGBA view.
+// The RGBA a simulation pixel shows as: see `FrameView`.
+std::array<std::uint8_t, 4> displayPixel(const std::uint8_t* pixel);
+
+// Truecolor feedback picture: red, green, and blue per pixel, warped alike, as the original's
+// 32-bit mode. Metal receives only the RGBA view.
 class Engine {
 public:
     explicit Engine(std::uint32_t seed);
@@ -124,12 +141,8 @@ public:
     void setEffects(const EffectSet& effects);
     int height() const { return height_; }
 
-    // The current look's palette. Each new look picks its own and blends to it.
-    const PaletteRecipe& palette() const { return paletteRecipe_; }
-    // The colors on screen, partway through a blend while one runs.
-    const Palette& paletteColors() const { return palette_; }
-    // Replaces the palette at once, without a blend. Out-of-range curves and orders are clamped.
-    void setPalette(const PaletteRecipe& recipe);
+    // The slow color drift of the wave and the nuclide, picked once per engine.
+    const ColorDrift& colorDrift() const { return drift_; }
 
     // `dt` is seconds. Gaps longer than 0.1s count as 0.1s.
     // The returned pointer is valid until the next tick or resize.
@@ -139,9 +152,7 @@ private:
     void pickLook();
     void pickEffects();
     void rebuildMap();
-    void pickPalette(bool blend);
-    bool soundEmpty() const;
-    void expandPalette(const std::uint8_t* indices);
+    void expandPixels(const std::uint8_t* pixels);
     void updateIdle(double dt);
     void drawIdleWave();
 
@@ -154,17 +165,7 @@ private:
     double mapElapsed_ = 0;
     // Seconds the picture has been moving. Pause holds it. Lock does not.
     double motionTime_ = 0;
-    PaletteRecipe paletteRecipe_{};
-    Palette palette_{};
-    Palette fromPalette_{};
-    Palette targetPalette_{};
-    // Seconds left in the blend from `fromPalette_` to `targetPalette_`.
-    double paletteBlendLeft_ = 0;
-    // RGBA8 for each index of `levelsPalette_`: its color and its highlight level. Rebuilt
-    // only when the drawn palette changes.
-    Palette levelsPalette_{};
-    std::array<std::array<std::uint8_t, 4>, 256> rgbaLookup_{};
-    bool lookupBuilt_ = false;
+    ColorDrift drift_{};
     // Whether `rgba_` changed since the last view was returned.
     bool frameChanged_ = true;
     BandRunner bands_{};
@@ -177,8 +178,6 @@ private:
     std::uint32_t ditherSeed_ = 0;
     // Whether the latest audio had sound. Effects for a new look are picked with it.
     bool soundActive_ = false;
-    // Seconds of unbroken silence. A palette picked after a long silence is brighter.
-    double silentSeconds_ = 0;
     // Seconds of silence, or of sound whose line would draw dimmer than the idle wave.
     // The idle wave waits on this.
     double faintSeconds_ = 0;
@@ -188,6 +187,7 @@ private:
     // The idle wave's made-up signal, one value per column, refilled each tick it draws.
     AudioFrame idleFrame_{};
     std::vector<SourcePoint> map_;
+    // kPixelBytes per pixel.
     std::vector<std::uint8_t> front_;
     std::vector<std::uint8_t> back_;
     std::vector<std::uint8_t> rgba_;

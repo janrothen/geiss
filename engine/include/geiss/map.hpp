@@ -142,23 +142,35 @@ SourcePoint mode25Source(int x, int y, int width, int height, const MapParameter
 void buildMap(std::vector<SourcePoint>& out, int width, int height, const MapParameters& map,
               const BandRunner& bands = {});
 
-// Samples `src` through `map`. `step` is 0...1 from the pixel toward the map target.
-// `decay` multiplies the bilinear sample. `src` and `dst` must not overlap.
+// Bytes per simulation pixel: red, green, blue, and the held level, so rows stay aligned and
+// the presenter's expansion is one pass. The original's truecolor buffer was laid out the
+// same way, in blue, green, red order, with its fourth byte unused.
+// The held level is how much of the pixel's brightness, on the channels' scale, came from a
+// fixed texture (mode 6's edges, the grid, crystals) that is held to SDR. It warps and darkens
+// with the colors, so a texture's trail keeps its share; see `displayPixel`.
+constexpr int kHeldByte = 3;
+constexpr int kPixelBytes = 4;
+
+// Samples `src` through `map`, each of red, green, and blue with the same bilinear weights,
+// as the original's truecolor warp did. `step` is 0...1 from the pixel toward the map target.
+// `decay` multiplies the sample. `src` and `dst` hold kPixelBytes per pixel and must not
+// overlap. The held level warps the same way as the colors.
 // `shiftX` and `shiftY` move every source point by that many pixels, as the original's
 // slide shift (slider1) offset the source pointer.
 // Each result rounds up or down at random, in proportion to its fraction, so a frame's
-// small darkening is kept on average instead of rounding away. Pass a different
-// `ditherSeed` each frame so the pattern changes.
+// small darkening is kept on average instead of rounding away. A pixel's three channels share
+// one threshold, so the rounding never speckles its hue, and the held level shares it too.
+// Pass a different `ditherSeed` each frame so the pattern changes.
 // `bands` may warp the rows at the same time. The result does not depend on it.
-void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
-                 const SourcePoint* map, float step, float decay, float shiftX = 0, float shiftY = 0,
-                 std::uint32_t ditherSeed = 0, const BandRunner& bands = {});
+void warpPixels(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
+                const SourcePoint* map, float step, float decay, float shiftX = 0, float shiftY = 0,
+                std::uint32_t ditherSeed = 0, const BandRunner& bands = {});
 
 // Wraps a source column into 0...width-1, as the warp does: the original's newx stepped by
 // FXW-1 until it was in range.
 float wrapColumn(float value, int width);
 
-// The rounding threshold, 0...1, that `warpIndices` uses for one pixel and seed.
+// The rounding threshold, 0...1, that `warpPixels` uses for one pixel and seed.
 float ditherThreshold(int x, int y, std::uint32_t seed);
 
 // Original weightsum numerator for this area. The per-frame multiplier at 30 fps is numerator/256.

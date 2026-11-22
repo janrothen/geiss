@@ -9,9 +9,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(geiss_engine STATIC
     src/audio.cpp
     src/beat.cpp
+    src/color.cpp
     src/effects.cpp
     src/map.cpp
-    src/palette.cpp
     src/shift.cpp
     src/engine.cpp
 )
