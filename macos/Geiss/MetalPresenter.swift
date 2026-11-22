@@ -38,11 +38,18 @@ import SwiftUI
 
 final class MetalPresenter: NSObject, MTKViewDelegate {
     let device: MTLDevice
-    private let queue: MTLCommandQueue
+    /// Shared with the GPU simulation, so an expansion runs before the draw that reads it.
+    let queue: MTLCommandQueue
+    /// Shaders.metal, also holding the simulation's kernels.
+    let library: MTLLibrary
     private let pipeline: MTLRenderPipelineState
     /// Uploads rotate through these so the CPU never writes a texture the GPU is still reading.
     private static let textureCount = 3
+    /// Written by an upload or by the GPU expansion, as plain 8-bit values.
     private var textures: [MTLTexture] = []
+    /// The same textures seen as sRGB, so the texture unit decodes the colors before it filters
+    /// them and the shader does not. Alpha, the highlight level, stays linear.
+    private var views: [MTLTexture] = []
     private var textureIndex = 0
     private var texture: MTLTexture?
     private let inFlight = DispatchSemaphore(value: textureCount)
@@ -79,7 +86,20 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         }
         self.device = device
         self.queue = queue
-        let library = try! device.makeLibrary(source: Self.shader, options: nil)
+        // Shaders.metal ships as a resource and compiles at launch, so building the app needs no
+        // separate Metal toolchain.
+        guard let url = Bundle.main.url(forResource: "Shaders", withExtension: "metal"),
+              let source = try? String(contentsOf: url, encoding: .utf8)
+        else {
+            fatalError("The Metal shaders are missing.")
+        }
+        let library: MTLLibrary
+        do {
+            library = try device.makeLibrary(source: source, options: nil)
+        } catch {
+            fatalError("The Metal shaders do not compile: \(error)")
+        }
+        self.library = library
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = library.makeFunction(name: "geissVertex")
         descriptor.fragmentFunction = library.makeFunction(name: "geissFragment")
@@ -107,13 +127,32 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     /// Shows the engine's frame. An unchanged frame of the same size is drawn again from the
     /// last texture without copying it, which is all a paused picture needs: the redraw keeps
     /// the HDR gain and the screen's color space current.
-    func present(pixels: UnsafePointer<UInt8>, width: Int, height: Int, changed: Bool) {
+    /// `pixels` is the RGBA frame on the CPU path. On the GPU path it is nil, and `expand`
+    /// writes the frame into the texture it is given instead.
+    func present(
+        pixels: UnsafePointer<UInt8>?,
+        width: Int,
+        height: Int,
+        changed: Bool,
+        expand: (MTLTexture) -> Bool
+    ) {
         guard width > 0, height > 0 else { return }
         if !changed, let texture, texture.width == width, texture.height == height {
             redraw()
             return
         }
-        upload(pixels: pixels, width: width, height: height)
+        upload(width: width, height: height) { target in
+            if let pixels {
+                target.replace(
+                    region: MTLRegionMake2D(0, 0, width, height),
+                    mipmapLevel: 0,
+                    withBytes: pixels,
+                    bytesPerRow: width * 4
+                )
+                return true
+            }
+            return expand(target)
+        }
     }
 
     /// Draws the last texture again. The draw holds a slot like an upload does, so every command
@@ -128,35 +167,32 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         releaseSlot()
     }
 
-    private func upload(pixels: UnsafePointer<UInt8>, width: Int, height: Int) {
+    private func upload(width: Int, height: Int, fill: (MTLTexture) -> Bool) {
         inFlight.wait()
         slotHeld = true
         if textures.first?.width != width || textures.first?.height != height {
-            // The sRGB format lets the texture unit decode the colors before it filters
-            // them, so the shader does not. Alpha, the highlight level, stays linear.
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: .rgba8Unorm_srgb,
+                pixelFormat: .rgba8Unorm,
                 width: width,
                 height: height,
                 mipmapped: false
             )
-            descriptor.usage = [.shaderRead]
+            descriptor.usage = [.shaderRead, .shaderWrite, .pixelFormatView]
             textures = (0..<Self.textureCount).compactMap { _ in device.makeTexture(descriptor: descriptor) }
+            views = textures.compactMap { $0.makeTextureView(pixelFormat: .rgba8Unorm_srgb) }
             textureIndex = 0
         }
-        guard !textures.isEmpty else {
+        guard !textures.isEmpty, views.count == textures.count else {
             releaseSlot()
             return
         }
-        let next = textures[textureIndex]
+        let index = textureIndex
         textureIndex = (textureIndex + 1) % textures.count
-        next.replace(
-            region: MTLRegionMake2D(0, 0, width, height),
-            mipmapLevel: 0,
-            withBytes: pixels,
-            bytesPerRow: width * 4
-        )
-        texture = next
+        guard fill(textures[index]) else {
+            releaseSlot()
+            return
+        }
+        texture = views[index]
         if let view {
             view.draw()
         }
@@ -225,54 +261,6 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         view.colorspace = screenSpace.flatMap { CGColorSpaceCreateExtendedLinearized($0) }
             ?? CGColorSpace(name: fallback)
     }
-
-    private static let shader = """
-    #include <metal_stdlib>
-    using namespace metal;
-
-    struct Varying {
-        float4 position [[position]];
-        float2 uv;
-    };
-
-    vertex Varying geissVertex(uint id [[vertex_id]]) {
-        float2 xy[4] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(1, 1) };
-        float2 uv[4] = { float2(0, 1), float2(1, 1), float2(0, 0), float2(1, 0) };
-        Varying out;
-        out.position = float4(xy[id], 0, 1);
-        out.uv = uv[id];
-        return out;
-    }
-
-    // Levels from 80% to the top ease up to `gain` times SDR white.
-    float boost(float level, float gain) {
-        return 1.0 + (gain - 1.0) * smoothstep(0.8, 1.0, level);
-    }
-
-    // RGB is the picture's color, encoded like sRGB and decoded by the texture's sRGB format, so a
-    // sample is already linear. Alpha is the highlight level, which rises with the pixel's
-    // brightest channel above full SDR brightness. Fresh lines, beat hits, and bright effects
-    // glow on an HDR screen while trails keep their SDR brightness.
-    fragment float4 geissFragment(Varying in [[stage_in]], texture2d<float> image [[texture(0)]],
-                                  constant float& gain [[buffer(0)]]) {
-        constexpr sampler linear(filter::linear, address::clamp_to_edge);
-        const float3 color = image.sample(linear, in.uv).rgb;
-        if (gain <= 1.0) {
-            return float4(color, 1.0);
-        }
-        // Each of the four texels the sampler blended gets its own boost, and the boosts are
-        // blended the same way. Easing a blended level instead would light only the middle of
-        // a magnified line, with a hard edge where the blend crosses 80%.
-        const float2 p = in.uv * float2(image.get_width(), image.get_height()) - 0.5;
-        const float2 f = fract(p);
-        const int2 last = int2(image.get_width(), image.get_height()) - 1;
-        const uint2 a = uint2(clamp(int2(floor(p)), int2(0), last));
-        const uint2 b = uint2(clamp(int2(floor(p)) + 1, int2(0), last));
-        const float top = mix(boost(image.read(a).a, gain), boost(image.read(uint2(b.x, a.y)).a, gain), f.x);
-        const float bottom = mix(boost(image.read(uint2(a.x, b.y)).a, gain), boost(image.read(b).a, gain), f.x);
-        return float4(color * mix(top, bottom, f.y), 1.0);
-    }
-    """
 }
 
 /// An MTKView that calls `onFrame` once per refresh of the screen it is on, up to that

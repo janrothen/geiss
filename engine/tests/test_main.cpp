@@ -1720,6 +1720,10 @@ void testTruecolorEffects() {
     }
     check(colors.size() > 1, "the dots' color changes over time");
     check(litCount(runEffects(only(Effect::Dots), 25, 880, 495, 1, 1, sound)) == 4, "from 880 wide a dot is 2x2");
+    // From 1800 wide each grid dot is 2x2, so the grid has four times the lit pixels.
+    const int narrowGrid = litCount(runEffects(only(Effect::Grid), 25, 1790, 1007, 1, 1, sound));
+    const int wideGrid = litCount(runEffects(only(Effect::Grid), 25, 1800, 1013, 1, 1, sound));
+    check(narrowGrid > 0 && wideGrid >= narrowGrid * 3, "from 1800 wide a grid dot is 2x2");
 
     // Shade bobs switch each channel on and off, so their glow takes on color.
     const Pixels shade = runEffects(only(Effect::Shade), 25, width, height, 200, 1, sound);

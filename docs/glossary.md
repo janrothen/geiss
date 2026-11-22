@@ -67,6 +67,7 @@ Effects draw into the previous frame before the warp, so the map smears them int
 - **Spectrum:** the original's 24 colour bands, from about 27 Hz to 15 kHz, measured over the newest 5 ms of the left channel and smoothed over about half a second.
 - **Wave color:** the waveform's color, from the spectrum: bass draws red, the middle green, and treble blue, scaled to the line's brightness. The original called this "sync color to sound". Here it is always on.
 - **Color drift:** a slow, endless change of tint, set once per launch. It tints the nuclide's rings, adds a touch to the wave color, and colors the wave on its own in silence and for the idle wave.
+- **Simulation size:** how many pixels the picture is simulated at. With the GPU warp it is one per point of the window, so 2560×1440 fullscreen on a 5K screen; the info readout's SIM row shows it.
 - **Highlight level:** how much a pixel may glow on an HDR screen, 0…255. It rises from 0 to 255 as the pixel's brightest channel goes from 128 to 208, so only the hottest, freshest pixels have high levels. Levels from 80% up glow.
 - **Highlight gain:** how bright the top highlight level is drawn, in multiples of SDR white. It is 2.5 or the screen's current headroom, whichever is lower, and 1 on a screen that is not HDR.
 - **Headroom:** how far above SDR white the screen can draw right now. It follows the brightness setting and can drop to 1 at full brightness. The *potential headroom* is the most the screen can ever offer. A screen counts as HDR when its potential headroom reaches 2.5.

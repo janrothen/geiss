@@ -43,6 +43,7 @@ struct InfoSnapshot: Equatable {
     var wave: String
     var effects: String
     var hdr: String
+    var simulation: String
 }
 
 enum PreviewSource: String {
@@ -104,6 +105,13 @@ final class VisualizerModel: ObservableObject {
     private static let maxSilenceFrames = Int(PreviewTone.sampleRate * maxDelta) + 1
 
     private static let sensitivityKey = "sensitivity"
+    /// Debug launch arguments: `-GeissCPUWarp YES` keeps the warp and the expansion on the CPU,
+    /// at the CPU path's size cap. `-GeissWarpCheck YES` compares every 120th GPU warp with the
+    /// CPU's and prints the difference.
+    private static let cpuWarpKey = "GeissCPUWarp"
+    private static let warpCheckKey = "GeissWarpCheck"
+    /// The CPU warp and expansion keep 120 Hz up to about this longest side.
+    private static let cpuLongestSide: CGFloat = 960
 
     var sourceLabel: String {
         switch preview {
@@ -127,6 +135,14 @@ final class VisualizerModel: ObservableObject {
         let stored = UserDefaults.standard.object(forKey: Self.sensitivityKey) as? Double ?? 1
         sensitivity = min(4, max(0.25, stored))
         bridge.setSensitivity(Float(sensitivity))
+        let defaults = UserDefaults.standard
+        if !defaults.bool(forKey: Self.cpuWarpKey) {
+            _ = bridge.useGPU(
+                with: presenter.library,
+                queue: presenter.queue,
+                check: defaults.bool(forKey: Self.warpCheckKey)
+            )
+        }
         // The tap delivers statuses on the main queue, in order.
         tap.onStatus = { [weak self] status in
             MainActor.assumeIsolated {
@@ -173,7 +189,7 @@ final class VisualizerModel: ObservableObject {
     func tick(at time: CFTimeInterval, viewSize: CGSize) {
         // A view that has not been laid out yet has no size worth building a simulation for.
         if viewSize.width >= 1, viewSize.height >= 1 {
-            applySize(Self.simulationSize(for: viewSize), at: time)
+            applySize(simulationSize(for: viewSize), at: time)
         }
 
         let dt = cappedDelta(to: time)
@@ -199,7 +215,15 @@ final class VisualizerModel: ObservableObject {
         var height: Int32 = 0
         var changed: ObjCBool = true
         let pixels = bridge.tick(dt, width: &width, height: &height, changed: &changed)
-        presenter.present(pixels: pixels, width: Int(width), height: Int(height), changed: changed.boolValue)
+        let bridge = bridge
+        presenter.present(
+            pixels: pixels,
+            width: Int(width),
+            height: Int(height),
+            changed: changed.boolValue
+        ) { texture in
+            bridge.expand(into: texture)
+        }
         countFrame(at: time)
     }
 
@@ -276,7 +300,8 @@ final class VisualizerModel: ObservableObject {
                 gain: presenter.highlightGain,
                 headroom: presenter.headroom,
                 potential: presenter.potentialHeadroom
-            )
+            ),
+            simulation: simulationLine
         )
         if snapshot != info {
             info = snapshot
@@ -303,9 +328,24 @@ final class VisualizerModel: ObservableObject {
         return look.resting ? "\(names) (resting)" : names
     }
 
-    static func simulationSize(for viewSize: CGSize) -> SimulationSize {
+    private var simulationLine: String {
+        let size = simSize.map { "\($0.width)×\($0.height)" } ?? "–"
+        return "\(size) · \(bridge.usesGPU ? "GPU" : "CPU") warp"
+    }
+
+    /// The GPU path simulates one pixel per point of the view, as Geiss HDR does per CSS pixel,
+    /// up to the GPU's largest texture. The CPU path caps the longest side for its frame rate.
+    private func simulationSize(for viewSize: CGSize) -> SimulationSize {
+        let cap = bridge.usesGPU ? CGFloat(Self.largestTexture) : Self.cpuLongestSide
+        return Self.simulationSize(for: viewSize, longestSide: cap)
+    }
+
+    /// Apple Silicon GPUs take 2D textures up to 16384 on a side.
+    private static let largestTexture = 16384
+
+    static func simulationSize(for viewSize: CGSize, longestSide: CGFloat) -> SimulationSize {
         let longest = max(viewSize.width, viewSize.height, 1)
-        let scale = min(1, 960 / longest)
+        let scale = min(1, longestSide / longest)
         return SimulationSize(
             width: max(2, Int((viewSize.width * scale).rounded())),
             height: max(2, Int((viewSize.height * scale).rounded()))

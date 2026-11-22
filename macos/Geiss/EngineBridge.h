@@ -33,6 +33,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -59,7 +60,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 // The SwiftUI shell sees only these Objective-C types. The pointer from tick is
 // valid until the next tick or resize. `changed` is NO when the pixels are the same as the
-// previous tick's, for example while paused, so the presenter can skip the upload.
+// previous tick's, for example while paused, so the presenter can skip the upload. On the GPU
+// path tick returns NULL and the presenter calls expandIntoTexture: instead.
 @interface GeissBridge : NSObject
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -70,13 +72,23 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setLocked:(BOOL)locked;
 - (void)nextVisual;
 - (void)resizeWidth:(int)width height:(int)height;
+// Moves the warp and the expansion to RGBA onto the GPU, sharing the engine's frame memory
+// without a copy. `library` holds the geissWarp and geissExpand kernels (Shaders.metal). Work is encoded on `queue`, the presenter's, so an expansion runs before the
+// draw that reads it. With `check`, every 120th warp also runs on the CPU and the largest
+// difference is logged. Returns NO, and stays on the CPU, if the kernels cannot be loaded.
+- (BOOL)useGPUWithLibrary:(id<MTLLibrary>)library queue:(id<MTLCommandQueue>)queue check:(BOOL)check;
+@property (nonatomic, readonly) BOOL usesGPU;
+// GPU path only: expands the latest frame into `texture` (rgba8Unorm, shader-writable, the size
+// of the frame) and commits that work. The next tick waits for it before drawing into the
+// frame again. Returns NO when there is no frame to expand.
+- (BOOL)expandIntoTexture:(id<MTLTexture>)texture;
 - (void)ingestInterleaved:(const float * _Nullable)samples
                 frameCount:(int)frameCount
                   channels:(int)channels
                 sampleRate:(double)sampleRate
                       time:(double)time;
 - (GeissLookInfo *)lookInfo;
-- (const uint8_t *)tick:(double)dt
+- (const uint8_t * _Nullable)tick:(double)dt
                   width:(int *)width
                  height:(int *)height
                 changed:(BOOL *)changed;
