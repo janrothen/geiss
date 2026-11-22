@@ -480,7 +480,7 @@ void buildBand(void* context, int index) {
     }
 }
 
-struct WarpJob {
+struct WarpBands {
     const std::uint8_t* src;
     std::uint8_t* dst;
     int width;
@@ -495,7 +495,7 @@ struct WarpJob {
 };
 
 void warpBand(void* context, int index) {
-    const auto& job = *static_cast<const WarpJob*>(context);
+    const auto& job = *static_cast<const WarpBands*>(context);
     const int width = job.width;
     const int height = job.height;
     const float maxY = static_cast<float>(height - 1);
@@ -546,12 +546,16 @@ void warpBand(void* context, int index) {
 
 void buildMap(std::vector<SourcePoint>& out, int width, int height, const MapParameters& map,
               const BandRunner& bands) {
-    const Rotations rotations = rotationsFor(map);
     out.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
-    if (width < 1 || height < 1) {
+    buildMap(out.data(), width, height, map, bands);
+}
+
+void buildMap(SourcePoint* out, int width, int height, const MapParameters& map, const BandRunner& bands) {
+    if (out == nullptr || width < 1 || height < 1) {
         return;
     }
-    BuildJob job{out.data(), width, height, bandCount(height), &map, &rotations};
+    const Rotations rotations = rotationsFor(map);
+    BuildJob job{out, width, height, bandCount(height), &map, &rotations};
     bands(job.count, &job, buildBand);
 }
 
@@ -561,7 +565,7 @@ void warpPixels(const std::uint8_t* src, std::uint8_t* dst, int width, int heigh
     if (width < 2 || height < 2 || src == nullptr || dst == nullptr || map == nullptr) {
         return;
     }
-    WarpJob job{src, dst, width, height, bandCount(height), map, std::clamp(step, 0.f, 1.f),
+    WarpBands job{src, dst, width, height, bandCount(height), map, std::clamp(step, 0.f, 1.f),
                 std::clamp(decay, 0.f, 1.f), shiftX, shiftY, ditherSeed};
     bands(job.count, &job, warpBand);
 }

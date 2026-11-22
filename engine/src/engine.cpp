@@ -493,7 +493,9 @@ void Engine::resize(int width, int height) {
     }
     front_.swap(back_);
     back_.assign(count * kPixelBytes, 0);
-    rgba_.assign(count * 4, 0);
+    map_.assign(count, SourcePoint{});
+    rgba_.assign(hostExpands_ ? 0 : count * 4, 0);
+    ++generation_;
     expandPixels(front_.data());
     effectLayer_.clearTrail();
     rebuildMap();
@@ -543,7 +545,9 @@ void Engine::nextVisual() {
 }
 
 void Engine::rebuildMap() {
-    buildMap(map_, width_, height_, mapParameters_, bands_);
+    if (map_.size() == static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_)) {
+        buildMap(map_.data(), width_, height_, mapParameters_, bands_);
+    }
 }
 
 namespace {
@@ -576,19 +580,34 @@ std::array<std::uint8_t, 4> displayPixel(const std::uint8_t* pixel) {
     return {kDisplayLevels[pixel[0]], kDisplayLevels[pixel[1]], kDisplayLevels[pixel[2]], static_cast<std::uint8_t>(level)};
 }
 
+EngineBuffers Engine::buffers() {
+    EngineBuffers buffers;
+    buffers.pixelsA = front_.data();
+    buffers.pixelsB = back_.data();
+    buffers.pixelBytes = pageRounded(front_.size());
+    buffers.map = map_.data();
+    buffers.mapBytes = pageRounded(map_.size() * sizeof(SourcePoint));
+    buffers.generation = generation_;
+    return buffers;
+}
+
 void Engine::expandPixels(const std::uint8_t* pixels) {
+    frameChanged_ = true;
+    if (hostExpands_) {
+        return;
+    }
     const std::size_t count = static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
     std::uint8_t* out = rgba_.data();
     for (std::size_t i = 0; i < count; ++i) {
         const std::array<std::uint8_t, 4> rgba = displayPixel(pixels + i * kPixelBytes);
         std::memcpy(out + i * 4, rgba.data(), 4);
     }
-    frameChanged_ = true;
 }
 
 FrameView Engine::tick(double dt, const AudioFrame& audio) {
     FrameView view;
-    view.rgba = rgba_.data();
+    view.rgba = hostExpands_ ? nullptr : rgba_.data();
+    view.pixels = front_.data();
     view.width = width_;
     view.height = height_;
     if (width_ < 2 || height_ < 2 || paused_) {
@@ -633,8 +652,14 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
                       mapParameters_.centerXNorm * static_cast<float>(width_),
                       mapParameters_.centerYNorm * static_cast<float>(height_), dt * kReferenceFps, audio);
     // The original added slider1 to the source pointer once per frame, whatever the map's damping.
-    warpPixels(front_.data(), back_.data(), width_, height_, map_.data(), step, decay,
-                slideShift_.x() * frameStep, slideShift_.y() * frameStep, ++ditherSeed_, bands_);
+    const WarpJob warp{front_.data(), back_.data(), width_, height_, map_.data(), step, decay,
+                       slideShift_.x() * frameStep, slideShift_.y() * frameStep, ++ditherSeed_};
+    if (warp_.run != nullptr) {
+        warp_.run(warp_.host, warp);
+    } else {
+        warpPixels(warp.src, warp.dst, warp.width, warp.height, warp.map, warp.step, warp.decay, warp.shiftX,
+                   warp.shiftY, warp.ditherSeed, bands_);
+    }
     if (!effects_.hideWaveform) {
         drawWaveform(back_.data(), width_, height_, audio, waveform_, mapParameters_.mode, mapParameters_.centerXNorm,
                      mapParameters_.centerYNorm, static_cast<float>(motionTime_), motionTime_ * kReferenceFps, drift_);
@@ -644,6 +669,7 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     expandPixels(back_.data());
     front_.swap(back_);
     frameChanged_ = false;
+    view.pixels = front_.data();
     return view;
 }
 

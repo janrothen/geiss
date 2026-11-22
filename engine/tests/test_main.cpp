@@ -556,6 +556,105 @@ geiss::AudioFrame beatFrame(bool beatMode, float brightness, float ratio) {
     return audio;
 }
 
+struct RecordingWarp {
+    std::vector<geiss::WarpJob> jobs;
+    static void run(void* host, const geiss::WarpJob& job) {
+        auto& self = *static_cast<RecordingWarp*>(host);
+        self.jobs.push_back(job);
+        geiss::warpPixels(job.src, job.dst, job.width, job.height, job.map, job.step, job.decay, job.shiftX, job.shiftY,
+                          job.ditherSeed);
+    }
+    geiss::WarpRunner runner() { return geiss::WarpRunner{&RecordingWarp::run, this}; }
+};
+
+void testWarpRunner() {
+    geiss::AudioFrame audio;
+    audio.volume = 100.f;
+    audio.averageVolume = 100.f;
+    audio.samples.resize(80);
+    for (int i = 0; i < 80; ++i) {
+        audio.samples[static_cast<std::size_t>(i)] = std::sin(static_cast<float>(i) * 0.3f);
+    }
+    geiss::Engine plain(21);
+    geiss::Engine hosted(21);
+    RecordingWarp warp;
+    hosted.setWarpRunner(warp.runner());
+    plain.resize(80, 45);
+    hosted.resize(80, 45);
+    bool same = true;
+    for (int frame = 0; frame < 30; ++frame) {
+        if (frame % 10 == 0) {
+            plain.nextVisual();
+            hosted.nextVisual();
+        }
+        const geiss::FrameView a = plain.tick(1.0 / 60.0, audio);
+        const geiss::FrameView b = hosted.tick(1.0 / 60.0, audio);
+        same = same && std::equal(a.rgba, a.rgba + static_cast<std::size_t>(a.width) * a.height * 4, b.rgba);
+    }
+    check(same, "a host warp that runs warpPixels draws the same pictures");
+    check(warp.jobs.size() == 30, "the host warp runs once per moving tick");
+
+    const geiss::EngineBuffers buffers = hosted.buffers();
+    const geiss::WarpJob& last = warp.jobs.back();
+    check(last.width == 80 && last.height == 45 && last.map == buffers.map, "a warp job carries the size and the map");
+    // The tick swapped the buffers after the warp, so the last destination is now the front.
+    check(last.dst == buffers.pixelsA && last.src == buffers.pixelsB, "a warp reads one shared buffer and writes the other");
+    check(warp.jobs[0].ditherSeed != warp.jobs[1].ditherSeed, "each warp gets a new rounding pattern");
+    check(last.decay > 0.f && last.decay < 1.f && last.step > 0.f, "a warp job carries the decay and the step");
+
+    hosted.setPaused(true);
+    hosted.tick(1.0 / 60.0, audio);
+    check(warp.jobs.size() == 30, "a paused tick runs no warp");
+}
+
+void testSharedBuffers() {
+    geiss::Engine engine(3);
+    engine.resize(100, 60);
+    const geiss::EngineBuffers first = engine.buffers();
+    const auto aligned = [](const void* pointer) {
+        return reinterpret_cast<std::uintptr_t>(pointer) % geiss::kBufferPage == 0;
+    };
+    check(aligned(first.pixelsA) && aligned(first.pixelsB) && aligned(first.map), "the frame buffers are page-aligned");
+    check(first.pixelBytes % geiss::kBufferPage == 0 && first.pixelBytes >= std::size_t{100} * 60 * geiss::kPixelBytes,
+          "the pixel buffers span whole pages");
+    check(first.mapBytes % geiss::kBufferPage == 0 && first.mapBytes >= std::size_t{100} * 60 * sizeof(geiss::SourcePoint),
+          "the map spans whole pages");
+    engine.nextVisual();
+    engine.tick(1.0 / 60.0, geiss::AudioFrame{});
+    const geiss::EngineBuffers ticked = engine.buffers();
+    check(ticked.generation == first.generation && ticked.map == first.map, "Next and ticks keep the buffers");
+    check((ticked.pixelsA == first.pixelsB && ticked.pixelsB == first.pixelsA), "a tick swaps the two pixel buffers");
+    engine.resize(120, 70);
+    check(engine.buffers().generation != first.generation, "a resize makes new buffers");
+    engine.resize(120, 70);
+    const auto again = engine.buffers().generation;
+    engine.resize(120, 70);
+    check(engine.buffers().generation == again, "the same size keeps them");
+}
+
+void testHostExpands() {
+    geiss::Engine cpu(9);
+    geiss::Engine host(9);
+    host.setHostExpands(true);
+    cpu.resize(64, 36);
+    host.resize(64, 36);
+    const geiss::AudioFrame audio = beatFrame(false, 1.f, 0.f);
+    geiss::FrameView a;
+    geiss::FrameView b;
+    for (int i = 0; i < 5; ++i) {
+        a = cpu.tick(1.0 / 30.0, audio);
+        b = host.tick(1.0 / 30.0, audio);
+    }
+    check(b.rgba == nullptr && b.pixels != nullptr && b.changed, "a host-expanded view carries the pixels instead of RGBA");
+    check(a.pixels != nullptr, "every view carries the pixels");
+    bool same = true;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(b.width) * b.height; ++i) {
+        const auto shown = geiss::displayPixel(b.pixels + i * geiss::kPixelBytes);
+        same = same && std::equal(shown.begin(), shown.end(), a.rgba + i * 4);
+    }
+    check(same, "host-expanded pixels show what the engine's own expansion does");
+}
+
 unsigned colorSum(const geiss::FrameView& frame) {
     unsigned color = 0;
     const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
@@ -2502,6 +2601,9 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testWrapColumn();
     testBandsMatchSerial();
     testFrameChanged();
+    testWarpRunner();
+    testSharedBuffers();
+    testHostExpands();
     if (failures != 0) {
         std::cerr << failures << " failed\n";
         return EXIT_FAILURE;
