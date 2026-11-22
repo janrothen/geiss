@@ -532,12 +532,12 @@ void warpBand(void* context, int index) {
             // fading. Random rounding keeps the expected value at any frame rate.
             const float threshold = ditherThreshold(x, y, job.ditherSeed);
             std::uint8_t* out = job.dst + pixel * kPixelBytes;
-            for (int c = 0; c < 3; ++c) {
+            // Red, green, blue, and the held level.
+            for (int c = 0; c < kPixelBytes; ++c) {
                 const float value = static_cast<float>(p00[c]) * w00 + static_cast<float>(p10[c]) * w10 +
                                     static_cast<float>(p01[c]) * w01 + static_cast<float>(p11[c]) * w11;
                 out[c] = static_cast<std::uint8_t>(std::min(value + threshold, 255.f));
             }
-            out[3] = 0;
         }
     }
 }

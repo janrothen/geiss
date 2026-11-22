@@ -121,12 +121,18 @@ void addBelow(std::uint8_t* pixels, int width, int height, int x, int y, int cha
     }
 }
 
-// Raises each channel to at least `value`.
-void raiseTo(std::uint8_t* p, int value) {
+// Raises each channel to at least `value`, for a fixed texture held to SDR. When that sets the
+// pixel's brightness, the held level takes it, so the texture and its trail never glow; a
+// brighter color underneath keeps its own.
+void raiseHeld(std::uint8_t* p, int value) {
+    const int brightest = std::max({p[0], p[1], p[2]});
     for (int c = 0; c < 3; ++c) {
         if (p[c] < value) {
             p[c] = static_cast<std::uint8_t>(value);
         }
+    }
+    if (value >= brightest && p[kHeldByte] < value) {
+        p[kHeldByte] = static_cast<std::uint8_t>(value);
     }
 }
 
@@ -409,6 +415,7 @@ void EffectLayer::chasers(const Canvas& canvas, int count, double previousClock)
                 for (int c = 0; c < 3; ++c) {
                     p[c] = static_cast<std::uint8_t>(255.f - static_cast<float>(255 - p[c]) * 0.6f);
                 }
+                p[kHeldByte] = 0;
             }
         }
     }
@@ -485,6 +492,7 @@ void EffectLayer::dots(const Canvas& canvas, int steps) {
                         p[0] = static_cast<std::uint8_t>(trailColor_[i].r);
                         p[1] = static_cast<std::uint8_t>(trailColor_[i].g);
                         p[2] = static_cast<std::uint8_t>(trailColor_[i].b);
+                        p[kHeldByte] = 0;
                     }
                 }
             }
@@ -557,7 +565,7 @@ void EffectLayer::dropSolarParticles(const Canvas& canvas, int count) {
 
 // Grid: a dot every 1/30 of the width, in both directions. The dots scroll one pixel a
 // frame, left or right, and their brightness pulses. A dot never darkens a channel, so it
-// draws grey over dark and leaves brighter colors alone.
+// draws grey over dark, held to SDR, and leaves brighter colors alone.
 void EffectLayer::grid(const Canvas& canvas, int direction) {
     const int spacing = std::max(2, canvas.width / 30);
     const double f = clock_;
@@ -576,7 +584,7 @@ void EffectLayer::grid(const Canvas& canvas, int direction) {
     for (int y = 0; y < canvas.height; y += spacing) {
         for (int x = 0; x < canvas.width + spacing; x += spacing) {
             if (std::uint8_t* p = pixel(canvas.pixels, canvas.width, canvas.height, x + shift, y)) {
-                raiseTo(p, bright);
+                raiseHeld(p, bright);
             }
         }
     }
@@ -682,7 +690,7 @@ void EffectLayer::drawSpectral(const Canvas& canvas, float strength) {
 }
 
 // Crystals: each frame, 2...7 spokes of 6...25 pixels (at 640 wide) burst from a point within
-// 15 pixels of the center. Every channel of every pixel they cross is raised to at least 150.
+// 15 pixels of the center. Every channel of every pixel they cross is raised to at least 150, held to SDR.
 void EffectLayer::crystals(const Canvas& canvas, int steps) {
     const float s = canvas.scale;
     for (int step = 0; step < steps; ++step) {
@@ -700,7 +708,7 @@ void EffectLayer::crystals(const Canvas& canvas, int steps) {
                 const float t = static_cast<float>(k) * 0.5f;
                 if (std::uint8_t* p = pixel(canvas.pixels, canvas.width, canvas.height, static_cast<int>(cx + dx * t),
                                             static_cast<int>(cy + dy * t))) {
-                    raiseTo(p, 150);
+                    raiseHeld(p, 150);
                 }
             }
         }
@@ -710,7 +718,7 @@ void EffectLayer::crystals(const Canvas& canvas, int steps) {
 // Mode6Edges: three rows along the top and three along the bottom take noise of 0...39 over a
 // slow wave, so the vortex field pulls a moving texture in from both edges. In truecolor each
 // channel has its own wave of 0...198, as in the original, so the texture shifts in color and
-// its peaks show at full brightness and glow on an HDR screen.
+// its peaks show at full brightness. The rows are held to SDR, so they never glow on HDR.
 // The rows are overwritten once per reference frame, so the texture is the same at any refresh.
 void EffectLayer::edges(const Canvas& canvas) {
     const int rows = std::min(3, canvas.height / 2);
@@ -741,11 +749,13 @@ void EffectLayer::edges(const Canvas& canvas) {
                 for (std::size_t c = 0; c < 3; ++c) {
                     p[c] = static_cast<std::uint8_t>(top.at(c) + random_.below(40));
                 }
+                p[kHeldByte] = std::max({p[0], p[1], p[2]});
             }
             if (std::uint8_t* p = pixel(canvas.pixels, canvas.width, canvas.height, x, canvas.height - 1 - r)) {
                 for (std::size_t c = 0; c < 3; ++c) {
                     p[c] = static_cast<std::uint8_t>(bottom.at(c) + random_.below(40));
                 }
+                p[kHeldByte] = std::max({p[0], p[1], p[2]});
             }
         }
     }

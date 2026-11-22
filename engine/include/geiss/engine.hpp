@@ -87,8 +87,9 @@ Look randomLook(Random& random);
 
 // RGB is the simulated color, doubled with saturation as the original's truecolor blit showed
 // it. Alpha carries the pixel's highlight level, rising from 0 to 255 as its brightest stored
-// channel goes from 128 to 208, so a presenter can pick out the hottest cores. The picture
-// itself is opaque.
+// channel goes from 128 to 208, so a presenter can pick out the hottest cores. It is scaled by
+// the share of that channel not held to SDR (see kHeldByte), so fixed textures never glow.
+// The picture itself is opaque.
 struct FrameView {
     const std::uint8_t* rgba = nullptr;
     int width = 0;

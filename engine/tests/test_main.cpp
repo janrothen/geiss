@@ -91,6 +91,11 @@ public:
         const std::uint8_t* p = &bytes_[i * geiss::kPixelBytes];
         return {p[0], p[1], p[2]};
     }
+    // The held level: how much of the brightness is held to SDR.
+    std::uint8_t held(std::size_t i) const { return bytes_[i * geiss::kPixelBytes + geiss::kHeldByte]; }
+    void setHeld(std::size_t i, std::uint8_t level) { bytes_[i * geiss::kPixelBytes + geiss::kHeldByte] = level; }
+    // The highlight level the presenter gets for pixel `i`.
+    std::uint8_t highlight(std::size_t i) const { return geiss::displayPixel(&bytes_[i * geiss::kPixelBytes])[3]; }
     void set(std::size_t i, geiss::Rgb color) {
         std::uint8_t* p = &bytes_[i * geiss::kPixelBytes];
         p[0] = static_cast<std::uint8_t>(color.r);
@@ -177,9 +182,10 @@ void testWarpDecayAndSample() {
         }
     }
     src.set(0, {100, 60, 20});
+    src.data()[geiss::kHeldByte] = 100;
     geiss::warpPixels(src.data(), dst.data(), width, height, map.data(), 0.f, 0.5f);
     check(dst.rgb(0) == geiss::Rgb{50, 30, 10}, "step 0 samples the pixel itself, each channel alike");
-    check(dst.data()[3] == 0, "the unused byte stays 0");
+    check(dst.data()[geiss::kHeldByte] == 50, "the held level warps and darkens with the colors");
 
     // Half a pixel to the right averages two pixels channel by channel.
     src.set(0, {100, 0, 200});
@@ -875,6 +881,25 @@ void testDisplayPixel() {
     check(glowing[3] == 255, "a channel at 208 or more is a full highlight");
     const std::array<std::uint8_t, 4> warm{168, 20, 0, 0};
     check(geiss::displayPixel(warm.data())[3] == 127, "the highlight rises with the brightest channel from 128 to 208");
+
+    // The held level keeps its share of the brightness out of the highlight.
+    const std::array<std::uint8_t, 4> held{30, 168, 250, 250};
+    const auto texture = geiss::displayPixel(held.data());
+    check(texture[0] == 60 && texture[1] == 255 && texture[2] == 255, "a held pixel shows the same colors");
+    check(texture[3] == 0, "a pixel held to SDR does not glow");
+    const std::array<std::uint8_t, 4> half{0, 0, 250, 125};
+    check(geiss::displayPixel(half.data())[3] == 127, "a half-held pixel glows half as much");
+    const std::array<std::uint8_t, 4> over{0, 0, 100, 255};
+    check(geiss::displayPixel(over.data())[3] == 0, "a held level above the brightness is no highlight");
+
+    // A line or soft spot that brightens a held pixel takes it over, so it glows again.
+    Pixels spot(25, 150);
+    for (std::size_t i = 0; i < spot.size(); ++i) {
+        spot.setHeld(i, 150);
+    }
+    geiss::plotSoftSpot(spot.data(), 5, 5, 2, 2, {250, 250, 250});
+    check(spot.held(12) == 0 && spot.highlight(12) == 255, "a line over a held texture glows");
+    check(spot.held(0) == 150, "a spot too faint to brighten a pixel leaves it held");
 }
 
 // Ticks one frame of a waveform-1 line over a black, effect-free picture.
@@ -1617,6 +1642,47 @@ void testTruecolorEffects() {
     const Pixels grid = runEffects(only(Effect::Grid), 25, width, height, 1, 1, sound);
     const Pixels crystal = runEffects(only(Effect::Crystals), 25, width, height, 1, 1, sound);
     check(!hasColor(grid, 0) && !hasColor(crystal, 0), "the grid and crystals draw grey");
+
+    // The fixed textures are held to SDR: the grid's pulse, crystals, and mode 6's edges never
+    // glow, while the chasers' white does.
+    const auto neverGlows = [](const Pixels& p) {
+        bool calm = true;
+        for (std::size_t i = 0; i < p.size(); ++i) {
+            calm = calm && p.highlight(i) == 0 && (p[i] == 0 || p.held(i) == p[i]);
+        }
+        return calm;
+    };
+    const Pixels edges = runEffects({}, 6, width, height, 1, 1, sound);
+    check(litCount(grid) > 0 && neverGlows(grid), "the grid is held to SDR");
+    check(litCount(crystal) > 0 && neverGlows(crystal), "crystals are held to SDR");
+    check(litCount(edges) > 0 && neverGlows(edges), "mode 6's edges are held to SDR");
+    bool edgesBright = false;
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+        edgesBright = edgesBright || edges[i] >= 208;
+    }
+    check(edgesBright, "mode 6's edges still reach full brightness");
+
+    Pixels heldWhite(static_cast<std::size_t>(width) * height, 150);
+    for (std::size_t i = 0; i < heldWhite.size(); ++i) {
+        heldWhite.setHeld(i, 150);
+    }
+    geiss::EffectLayer chaserLayer(3);
+    chaserLayer.draw(heldWhite.data(), width, height, only(Effect::Chasers), 25, width / 2.f, height / 2.f, 1.0, sound);
+    bool chaserGlows = false;
+    for (std::size_t i = 0; i < heldWhite.size(); ++i) {
+        chaserGlows = chaserGlows || (heldWhite.held(i) == 0 && heldWhite.highlight(i) > 0);
+    }
+    check(chaserGlows, "a chaser over a held texture takes it over and glows");
+
+    // A texture under a brighter color leaves that color's glow alone.
+    Pixels hot(static_cast<std::size_t>(width) * height, 220);
+    geiss::EffectLayer hotLayer(4);
+    hotLayer.draw(hot.data(), width, height, only(Effect::Crystals), 25, width / 2.f, height / 2.f, 1.0, sound);
+    bool unheld = true;
+    for (std::size_t i = 0; i < hot.size(); ++i) {
+        unheld = unheld && hot.held(i) == 0;
+    }
+    check(unheld, "crystals under a brighter color do not hold it");
 }
 
 void testNuclide() {

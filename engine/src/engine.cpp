@@ -137,21 +137,27 @@ struct Ink {
     bool soft = false;
 };
 
-void raise(std::uint8_t& channel, int value) {
+bool raise(std::uint8_t& channel, int value) {
     if (channel < value) {
         channel = static_cast<std::uint8_t>(std::min(value, 255));
+        return true;
     }
+    return false;
 }
 
-// Max-blends each channel, as every original waveform did in truecolor.
+// Max-blends each channel, as every original waveform did in truecolor. A pixel the line
+// brightens is the line's, so it is no longer held to SDR.
 void plotPixel(std::uint8_t* pixels, int width, int height, int x, int y, Rgb color) {
     if (x < 0 || y < 0 || x >= width || y >= height) {
         return;
     }
     std::uint8_t* p = pixels + (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)) * kPixelBytes;
-    raise(p[0], color.r);
-    raise(p[1], color.g);
-    raise(p[2], color.b);
+    const bool red = raise(p[0], color.r);
+    const bool green = raise(p[1], color.g);
+    const bool blue = raise(p[2], color.b);
+    if (red || green || blue) {
+        p[kHeldByte] = 0;
+    }
 }
 
 // A soft spot's 5x5 falloff, close to a Gaussian with a radius of about one pixel, in
@@ -554,8 +560,11 @@ constexpr std::array<std::uint8_t, 256> kHighlightLevels = [] {
 }  // namespace
 
 std::array<std::uint8_t, 4> displayPixel(const std::uint8_t* pixel) {
-    const std::uint8_t brightest = std::max({pixel[0], pixel[1], pixel[2]});
-    return {kDisplayLevels[pixel[0]], kDisplayLevels[pixel[1]], kDisplayLevels[pixel[2]], kHighlightLevels[brightest]};
+    const int brightest = std::max({pixel[0], pixel[1], pixel[2]});
+    // Only the share of the brightness that is not held to SDR glows.
+    const int free = std::max(brightest - static_cast<int>(pixel[kHeldByte]), 0);
+    const int level = brightest > 0 ? kHighlightLevels[static_cast<std::size_t>(brightest)] * free / brightest : 0;
+    return {kDisplayLevels[pixel[0]], kDisplayLevels[pixel[1]], kDisplayLevels[pixel[2]], static_cast<std::uint8_t>(level)};
 }
 
 void Engine::expandPixels(const std::uint8_t* pixels) {
