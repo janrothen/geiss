@@ -690,7 +690,8 @@ void EffectLayer::drawSpectral(const Canvas& canvas, float strength) {
 }
 
 // Crystals: each frame, 2...7 spokes of 6...25 pixels (at 640 wide) burst from a point within
-// 15 pixels of the center. Every channel of every pixel they cross is raised to at least 150, held to SDR.
+// 15 pixels of the center. Every channel of every pixel they cross is raised to at least 150,
+// held to SDR.
 void EffectLayer::crystals(const Canvas& canvas, int steps) {
     const float s = canvas.scale;
     for (int step = 0; step < steps; ++step) {

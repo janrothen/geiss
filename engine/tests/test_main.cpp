@@ -900,6 +900,14 @@ void testDisplayPixel() {
     geiss::plotSoftSpot(spot.data(), 5, 5, 2, 2, {250, 250, 250});
     check(spot.held(12) == 0 && spot.highlight(12) == 255, "a line over a held texture glows");
     check(spot.held(0) == 150, "a spot too faint to brighten a pixel leaves it held");
+
+    // A line that only lifts a dimmer channel of a texture leaves it held.
+    Pixels edge(1, 0);
+    edge.set(0, {200, 20, 20});
+    edge.setHeld(0, 200);
+    geiss::plotSoftSpot(edge.data(), 1, 1, 0, 0, {0, 0, 150});
+    check(edge.rgb(0) == geiss::Rgb{200, 20, 150} && edge.held(0) == 200 && edge.highlight(0) == 0,
+          "a blue line over a red texture leaves the texture held");
 }
 
 // Ticks one frame of a waveform-1 line over a black, effect-free picture.
@@ -2393,26 +2401,32 @@ void testIdleWave() {
     }
     check(beating.idleLevel() == 0.f, "beat mode's dark gaps keep the idle wave down");
 
-    // The hand-off compares drawn colors. A bass line at brightness 34 is above the idle wave's
-    // darkest base of 26, but it draws in a red of about 45, while the drift color at base 26
-    // reaches up to 2.5 times that. Whenever the drift is brighter, the line counts as dimmer.
+    // The hand-off compares drawn colors: the line's brightest channel against the drift
+    // color's average brightest channel at the idle wave's darkest base, about 26 * 1.58 = 41.
+    // A bass line at brightness 34 is above that base but draws in a red of about 45, so it
+    // replaces the idle wave, and a line at 28 draws dimmer. Neither flips as the drift moves.
     std::array<float, geiss::kFourierDetail> bass{};
     bass[3] = 1.f;
     const geiss::ColorDrift drift{};
-    bool sawDimmer = false;
-    bool sawBrighter = false;
+    bool steady = true;
     for (int frame = 0; frame < 4000; frame += 7) {
         const auto t = static_cast<double>(frame);
         const geiss::Rgb line = geiss::waveColor(34.f, t, drift, bass);
-        const geiss::Rgb idle = geiss::driftColor(26.f, t, drift);
-        const bool dimmer = std::max({line.r, line.g, line.b}) < std::max({idle.r, idle.g, idle.b});
-        check(geiss::drawsDimmerThanIdle(34.f, t, drift, bass) == dimmer,
-              "the idle hand-off follows the brightest drawn channel");
-        sawDimmer = sawDimmer || dimmer;
-        sawBrighter = sawBrighter || !dimmer;
+        const geiss::Rgb faint = geiss::waveColor(28.f, t, drift, bass);
+        check(geiss::drawsDimmerThanIdle(34.f, t, drift, bass) == (std::max({line.r, line.g, line.b}) < 41),
+              "the idle hand-off follows the line's brightest drawn channel");
+        steady = steady && !geiss::drawsDimmerThanIdle(34.f, t, drift, bass) &&
+                 geiss::drawsDimmerThanIdle(28.f, t, drift, bass) && std::max({faint.r, faint.g, faint.b}) < 41;
     }
-    check(sawDimmer, "a bass line above the idle base can still draw dimmer than the idle wave");
-    check(sawBrighter, "a bass line above the idle base draws brighter when the drift is dim");
+    check(steady, "a steady line stays on one side of the hand-off while the drift moves");
+    // Without spectrum power the line is drift-colored like the idle wave, so only the base counts.
+    const std::array<float, geiss::kFourierDetail> none{};
+    bool byBase = true;
+    for (int frame = 0; frame < 4000; frame += 7) {
+        byBase = byBase && geiss::drawsDimmerThanIdle(25.f, frame, drift, none) &&
+                 !geiss::drawsDimmerThanIdle(27.f, frame, drift, none);
+    }
+    check(byBase, "a line without spectrum power compares by brightness alone");
     check(!geiss::drawsDimmerThanIdle(155.f, 0.0, drift, bass), "a loud line always replaces the idle wave");
     check(geiss::drawsDimmerThanIdle(0.f, 0.0, drift, bass), "a dark line never replaces the idle wave");
 

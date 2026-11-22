@@ -159,8 +159,8 @@ constexpr int kPixelBytes = 4;
 // slide shift (slider1) offset the source pointer.
 // Each result rounds up or down at random, in proportion to its fraction, so a frame's
 // small darkening is kept on average instead of rounding away. A pixel's three channels share
-// one threshold, so the rounding never speckles its hue, and the held level shares it too. Pass a different `ditherSeed` each
-// frame so the pattern changes.
+// one threshold, so the rounding never speckles its hue, and the held level shares it too.
+// Pass a different `ditherSeed` each frame so the pattern changes.
 // `bands` may warp the rows at the same time. The result does not depend on it.
 void warpPixels(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
                 const SourcePoint* map, float step, float decay, float shiftX = 0, float shiftY = 0,

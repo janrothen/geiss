@@ -72,9 +72,10 @@ float wrappedPhase(double radiansPerSecond, double seconds);
 
 // The idle wave's hand-off: whether a line of brightness `base` (0...155, RenderWave's scale,
 // before the beat scale) in the wave color would draw dimmer than the idle wave at its darkest,
-// both at `frames` reference frames. It compares the colors as drawn, by their brightest
-// channel, since the drift color the idle wave uses swings much further above its base than
-// the spectrum color of a sound's line.
+// the line at `frames` reference frames. It compares the colors as drawn, by their brightest
+// channel, since the drift color the idle wave uses sits further above its base than the
+// spectrum color of a sound's line. The idle side is the drift's average over time, about 41,
+// so the threshold holds still while the drift wanders.
 bool drawsDimmerThanIdle(float base, double frames, const ColorDrift& drift,
                          const std::array<float, kFourierDetail>& power);
 

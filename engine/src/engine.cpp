@@ -79,11 +79,15 @@ constexpr float kIdleBreath = 10.f;
 // The hand-off. Sound whose line would draw dimmer than the idle wave's darkest keeps the
 // idle wave, so quiet music never looks darker than silence; its faint line plays inside it.
 // kIdleHandOff is the idle wave's darkest base. The two are compared as drawn colors (see
-// `drawsDimmerThanIdle`): at the same base the drift color can be twice as bright as a line's.
+// `drawsDimmerThanIdle`): at the same base the drift color is brighter than a line's.
 // Brighter sound fades the idle wave out over kIdleFadeSeconds instead of cutting it, and
 // while any of it is left, quiet brings it back up without the wait, so sound hovering
 // near the hand-off makes it dip instead of blinking off and on.
 constexpr float kIdleHandOff = kIdleBright - kIdleBreath;
+// The drift color's brightest channel averages 1.58 times its base over time, for any drift
+// (measured over many drifts; each channel swings 0.36...2.49 times). The hand-off compares
+// against that average, so a steady line does not flip across it as the drift wanders.
+constexpr float kDriftMeanPeak = 1.58f;
 constexpr double kIdleFadeSeconds = 0.5;
 constexpr double kIdleBreathSeconds = 7.0;
 // The signal's size swells between 0.2 and 0.4 of a full-scale wave over kIdleSwellSeconds.
@@ -137,25 +141,26 @@ struct Ink {
     bool soft = false;
 };
 
-bool raise(std::uint8_t& channel, int value) {
+void raise(std::uint8_t& channel, int value) {
     if (channel < value) {
         channel = static_cast<std::uint8_t>(std::min(value, 255));
-        return true;
     }
-    return false;
 }
 
-// Max-blends each channel, as every original waveform did in truecolor. A pixel the line
-// brightens is the line's, so it is no longer held to SDR.
+// Max-blends each channel, as every original waveform did in truecolor. A pixel whose
+// brightness the line now sets is the line's, so it is no longer held to SDR. A line that only
+// lifts a dimmer channel leaves the held level, so a texture's bright channel keeps from
+// glowing.
 void plotPixel(std::uint8_t* pixels, int width, int height, int x, int y, Rgb color) {
     if (x < 0 || y < 0 || x >= width || y >= height) {
         return;
     }
     std::uint8_t* p = pixels + (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)) * kPixelBytes;
-    const bool red = raise(p[0], color.r);
-    const bool green = raise(p[1], color.g);
-    const bool blue = raise(p[2], color.b);
-    if (red || green || blue) {
+    const int before = std::max({p[0], p[1], p[2]});
+    raise(p[0], color.r);
+    raise(p[1], color.g);
+    raise(p[2], color.b);
+    if (std::max({color.r, color.g, color.b}) > before) {
         p[kHeldByte] = 0;
     }
 }
@@ -192,7 +197,11 @@ float wrappedPhase(double radiansPerSecond, double seconds) {
 bool drawsDimmerThanIdle(float base, double frames, const ColorDrift& drift,
                          const std::array<float, kFourierDetail>& power) {
     const auto brightest = [](Rgb color) { return std::max({color.r, color.g, color.b}); };
-    return brightest(waveColor(base, frames, drift, power)) < brightest(driftColor(kIdleHandOff, frames, drift));
+    // Without spectrum power the line takes the drift color too, so the two compare by base.
+    if (std::all_of(power.begin(), power.end(), [](float band) { return band <= 0.f; })) {
+        return base < kIdleHandOff;
+    }
+    return static_cast<float>(brightest(waveColor(base, frames, drift, power))) < kIdleHandOff * kDriftMeanPeak;
 }
 
 namespace {
