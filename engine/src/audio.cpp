@@ -187,11 +187,51 @@ std::array<float, kSpectrumBands> spectrumOf(const std::vector<float>& mono, dou
     return bands;
 }
 
+// The original measured 256 samples of the left channel.
+constexpr int kFourierSamples = 256;
+// g_power_smoothed kept 0.94 of its value per frame at 30 fps.
+constexpr double kPowerRetain = 0.94;
+
 bool hasAudioBlock(const PcmBlock& block) {
     return block.samples != nullptr && block.frameCount > 0 && block.channels > 0;
 }
 
 }  // namespace
+
+double fourierBandHz(int band) {
+    return 20.0 * std::pow(2.0, 10.0 * static_cast<double>(band) / static_cast<double>(kFourierDetail));
+}
+
+// Intentional differences: the frequency uses the block's own sample rate and a true 2 pi,
+// where the original assumed 44.1 kHz and wrote 6.28.
+std::array<float, kFourierDetail> fourierPower(const float* samples, int count, double sampleRate) {
+    std::array<float, kFourierDetail> power{};
+    if (samples == nullptr || count < 2 || sampleRate <= 0) {
+        return power;
+    }
+    const auto size = static_cast<std::size_t>(count);
+    std::vector<double> smoothed(size);
+    double mean = 0;
+    for (std::size_t i = 0; i < size; ++i) {
+        const double next = samples[std::min(i + 1, size - 1)];
+        smoothed[i] = 0.8 * static_cast<double>(samples[i]) + 0.2 * next;
+        mean += smoothed[i];
+    }
+    mean /= static_cast<double>(size);
+    for (int band = 1; band < kFourierDetail; ++band) {
+        const double omega = 2.0 * std::numbers::pi * fourierBandHz(band) / sampleRate;
+        double a = 0;
+        double b = 0;
+        for (std::size_t i = 0; i < size; ++i) {
+            const double value = smoothed[i] - mean;
+            const double theta = omega * static_cast<double>(i);
+            a += value * std::cos(theta);
+            b += value * std::sin(theta);
+        }
+        power.at(static_cast<std::size_t>(band)) = static_cast<float>(std::sqrt(a * a + b * b));
+    }
+    return power;
+}
 
 AudioFrame Analyzer::analyze(const PcmBlock& block, int columns, float gain) {
     AudioFrame frame;
@@ -255,13 +295,28 @@ AudioFrame Analyzer::analyze(const PcmBlock& block, int columns, float gain) {
     frame.samples.assign(static_cast<std::size_t>(columns), 0.f);
     frame.left.assign(static_cast<std::size_t>(columns), 0.f);
     frame.right.assign(static_cast<std::size_t>(columns), 0.f);
+    std::size_t first = 0;
     if (!mono.empty()) {
         const std::size_t window = waveWindowFrames(columns, block.sampleRate, mono.size());
-        const std::size_t first = waveWindowStart(mono, window);
+        first = waveWindowStart(mono, window);
         resample(mono, first, window, frame.samples);
         resample(left, first, window, frame.left);
         resample(right, first, window, frame.right);
     }
+
+    // The colour spectrum reads the left channel from where the line starts, as the original
+    // read the start of its triggered buffer. Its smoothing follows elapsed time.
+    std::array<float, kFourierDetail> power{};
+    if (!left.empty()) {
+        const std::size_t count = std::min<std::size_t>(kFourierSamples, left.size());
+        const std::size_t start = std::min(first, left.size() - count);
+        power = fourierPower(left.data() + start, static_cast<int>(count), block.sampleRate);
+    }
+    const auto powerRetain = static_cast<float>(std::pow(kPowerRetain, elapsed * 30.0));
+    for (std::size_t band = 0; band < power_.size(); ++band) {
+        power_.at(band) = power_.at(band) * powerRetain + power.at(band) * (1.f - powerRetain);
+    }
+    frame.power = power_;
 
     if (frame.level < kSilenceLevel) {
         silenceHeld_ += elapsed;

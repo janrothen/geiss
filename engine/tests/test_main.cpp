@@ -34,6 +34,7 @@
 
 #include "geiss/audio.hpp"
 #include "geiss/beat.hpp"
+#include "geiss/color.hpp"
 #include "geiss/engine.hpp"
 #include "geiss/map.hpp"
 #include "geiss/palette.hpp"
@@ -1968,6 +1969,142 @@ void testSpectrumBands() {
     check(loud[0] == 255.f, "band levels stop at 255");
 }
 
+std::vector<float> toneSamples(double hz, float amplitude, double rate, int frames) {
+    std::vector<float> tone(static_cast<std::size_t>(frames));
+    for (int i = 0; i < frames; ++i) {
+        tone[static_cast<std::size_t>(i)] = amplitude * static_cast<float>(std::sin(2.0 * std::numbers::pi * hz * i / rate));
+    }
+    return tone;
+}
+
+std::size_t strongestBand(const std::array<float, geiss::kFourierDetail>& power) {
+    return static_cast<std::size_t>(std::max_element(power.begin(), power.end()) - power.begin());
+}
+
+void testFourierPower() {
+    checkNear(static_cast<float>(geiss::fourierBandHz(12)), 640.f, 0.01f, "band 12 is centered on 640 Hz");
+    checkNear(static_cast<float>(geiss::fourierBandHz(24)), 20480.f, 0.1f, "ten octaves up from 20 Hz at band 24");
+    constexpr double rate = 48000.0;
+    for (const int band : {12, 15, 18, 22}) {
+        // 256 samples at 48 kHz resolve about 190 Hz, so the bass bands below band 12 blur together.
+        const auto tone = toneSamples(geiss::fourierBandHz(band), 0.5f, rate, 256);
+        const auto power = geiss::fourierPower(tone.data(), 256, rate);
+        check(strongestBand(power) == static_cast<std::size_t>(band), "a tone at a band's center peaks in that band");
+        check(power[0] == 0.f, "band 0 is never measured");
+    }
+    const std::vector<float> flat(256, 0.3f);
+    const auto dc = geiss::fourierPower(flat.data(), 256, rate);
+    check(std::all_of(dc.begin(), dc.end(), [](float p) { return p < 1e-3f; }), "a constant offset has no power");
+    const auto none = geiss::fourierPower(nullptr, 256, rate);
+    check(std::all_of(none.begin(), none.end(), [](float p) { return p == 0.f; }), "no samples, no power");
+}
+
+void testSmoothedPower() {
+    constexpr double rate = 48000.0;
+    const auto tone = toneSamples(geiss::fourierBandHz(18), 0.5f, rate, 4800);
+    // The same half second of the same tone at 30 and at 120 blocks per second.
+    auto smoothedAfter = [&](int blocksPerSecond) {
+        geiss::Analyzer analyzer;
+        geiss::AudioFrame frame;
+        for (int i = 0; i <= blocksPerSecond / 2; ++i) {
+            geiss::PcmBlock block;
+            block.samples = tone.data();
+            block.frameCount = 4800;
+            block.channels = 1;
+            block.sampleRate = rate;
+            block.time = static_cast<double>(i) / blocksPerSecond;
+            frame = analyzer.analyze(block, 64, 1.f);
+        }
+        return frame.power;
+    };
+    const auto slow = smoothedAfter(30);
+    const auto fast = smoothedAfter(120);
+    checkNear(fast[18] / slow[18], 1.f, 0.05f, "smoothing follows time, not the block rate");
+    const auto direct = geiss::fourierPower(tone.data(), 256, rate);
+    check(slow[18] < direct[18] && slow[18] > direct[18] * 0.5f, "half a second rises most of the way");
+    check(slow[0] == 0.f, "band 0 stays 0");
+
+    geiss::Analyzer quiet;
+    const std::vector<float> zeros(4800, 0.f);
+    geiss::PcmBlock block;
+    block.samples = zeros.data();
+    block.frameCount = 4800;
+    block.channels = 1;
+    block.sampleRate = rate;
+    const auto silent = quiet.analyze(block, 64, 1.f).power;
+    check(std::all_of(silent.begin(), silent.end(), [](float p) { return p == 0.f; }), "silence has no colour power");
+}
+
+void testWaveColor() {
+    constexpr double rate = 48000.0;
+    const geiss::ColorDrift drift;
+    auto colorOf = [&](double hz, float base) {
+        const auto tone = toneSamples(hz, 0.5f, rate, 256);
+        return geiss::waveColor(base, 100.0, drift, geiss::fourierPower(tone.data(), 256, rate));
+    };
+    // 256 samples are about 5 ms, a fraction of a bass cycle, so the bass colour depends on the
+    // phase the window catches, as in the original. Deep bass reads red.
+    const geiss::Rgb bass = colorOf(40.0, 100.f);
+    check(bass.r > bass.g && bass.r > bass.b, "bass draws red");
+    const geiss::Rgb middle = colorOf(geiss::fourierBandHz(11), 100.f);
+    check(middle.g > middle.r && middle.g > middle.b, "the middle draws green");
+    const geiss::Rgb treble = colorOf(8000.0, 100.f);
+    check(treble.b > treble.r && treble.b > treble.g, "treble draws blue");
+
+    // Below the clamp the color's length is about base * 1.35, plus the drift's small share.
+    const geiss::Rgb dim = colorOf(geiss::fourierBandHz(11), 40.f);
+    const float length = std::sqrt(static_cast<float>(dim.r * dim.r + dim.g * dim.g + dim.b * dim.b));
+    checkNear(length, 40.f * 1.35f, 6.f, "the spectrum color is scaled to the brightness");
+
+    const std::array<float, geiss::kFourierDetail> none{};
+    check(geiss::waveColor(100.f, 100.0, drift, none) == geiss::driftColor(100.f, 100.0, drift),
+          "without spectrum power the wave takes the drift color");
+    for (int frame = 0; frame < 5000; frame += 37) {
+        for (const geiss::Rgb c : {geiss::driftColor(155.f, frame, drift), colorOf(40.0, 155.f), colorOf(8000.0, 155.f)}) {
+            check(c.r >= 0 && c.r <= 255 && c.g >= 0 && c.g <= 255 && c.b >= 0 && c.b <= 255, "colors stay in 0...255");
+        }
+    }
+    check(geiss::driftColor(0.f, 10.0, drift) == geiss::Rgb{}, "no brightness, no color");
+}
+
+void testColorDrift() {
+    geiss::Random random;
+    random.state = 7;
+    const geiss::ColorDrift drift = geiss::randomColorDrift(random);
+    for (const float rate : drift.rates) {
+        check(rate >= 0.02f && rate < 0.03f, "drift rates are 0.02...0.03");
+    }
+    check(drift.offset >= 0 && drift.offset < 40000, "the drift phase is 0...39999");
+    // The drift moves: over a few hundred frames each channel changes.
+    const geiss::Rgb early = geiss::driftColor(100.f, 0.0, drift);
+    const geiss::Rgb later = geiss::driftColor(100.f, 300.0, drift);
+    check(!(early == later), "the drift color changes over time");
+
+    float lowest = 1.f;
+    float highest = 0.f;
+    float silentLowest = 1.f;
+    float silentHighest = 0.f;
+    for (int frame = 0; frame < 20000; frame += 3) {
+        const geiss::Tint tint = geiss::nuclideTint(frame, drift);
+        const geiss::Tint silent = geiss::silentNuclideTint(frame, drift);
+        for (const float c : {tint.r, tint.g, tint.b}) {
+            lowest = std::min(lowest, c);
+            highest = std::max(highest, c);
+        }
+        for (const float c : {silent.r, silent.g, silent.b}) {
+            silentLowest = std::min(silentLowest, c);
+            silentHighest = std::max(silentHighest, c);
+        }
+    }
+    check(lowest >= 0.159f && highest <= 1.001f && highest - lowest > 0.5f, "the nuclide tint swings within 0.16...1");
+    check(silentLowest >= -0.001f && silentHighest <= 1.001f && silentHighest - silentLowest > 0.6f,
+          "the silent nuclide tint swings within 0...1");
+    const geiss::Tint ring = geiss::silentNuclideTint(500.0, drift);
+    const geiss::Tint swapped = geiss::nuclideTint(500.0, drift);
+    check(std::fabs((ring.r - 0.5f) / 0.25f - (swapped.b - 0.58f) / 0.21f) < 1e-3f,
+          "the silent ring's red follows the blue phase, as the original's swapped bytes did");
+}
+
 void testCenterDwindle() {
     constexpr int width = 64;
     constexpr int height = 48;
@@ -2338,6 +2475,10 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testSpectralDots();
     testCrystalsAndEdges();
     testSpectrumBands();
+    testFourierPower();
+    testSmoothedPower();
+    testWaveColor();
+    testColorDrift();
     testCenterDwindle();
     testMode5FollowsNuclide();
     testEngineEffects();
