@@ -472,6 +472,10 @@ void Engine::resize(int width, int height) {
     if (width == width_ && height == height_) {
         return;
     }
+    // The buffers are about to change, so a running warp must finish, and its frame is lost.
+    finishWarp();
+    warpReady_ = false;
+    lastDt_ = 0;
     const int oldWidth = width_;
     const int oldHeight = height_;
     width_ = width;
@@ -493,7 +497,9 @@ void Engine::resize(int width, int height) {
     }
     front_.swap(back_);
     back_.assign(count * kPixelBytes, 0);
-    rgba_.assign(count * 4, 0);
+    map_.assign(count, SourcePoint{});
+    rgba_.assign(hostExpands_ ? 0 : count * 4, 0);
+    ++generation_;
     expandPixels(front_.data());
     effectLayer_.clearTrail();
     rebuildMap();
@@ -543,7 +549,11 @@ void Engine::nextVisual() {
 }
 
 void Engine::rebuildMap() {
-    buildMap(map_, width_, height_, mapParameters_, bands_);
+    // A started warp keeps the map it began with.
+    finishWarp();
+    if (map_.size() == static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_)) {
+        buildMap(map_.data(), width_, height_, mapParameters_, bands_);
+    }
 }
 
 namespace {
@@ -576,19 +586,46 @@ std::array<std::uint8_t, 4> displayPixel(const std::uint8_t* pixel) {
     return {kDisplayLevels[pixel[0]], kDisplayLevels[pixel[1]], kDisplayLevels[pixel[2]], static_cast<std::uint8_t>(level)};
 }
 
+void Engine::setHostExpands(bool hostExpands) {
+    if (hostExpands == hostExpands_) {
+        return;
+    }
+    hostExpands_ = hostExpands;
+    const std::size_t count = static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
+    rgba_.assign(hostExpands_ ? 0 : count * 4, 0);
+    expandPixels(front_.data());
+}
+
+EngineBuffers Engine::buffers() {
+    EngineBuffers buffers;
+    buffers.pixelsA = front_.data();
+    buffers.pixelsB = back_.data();
+    buffers.pixelBytes = pageRounded(front_.size());
+    buffers.map = map_.data();
+    buffers.mapBytes = pageRounded(map_.size() * sizeof(SourcePoint));
+    buffers.generation = generation_;
+    return buffers;
+}
+
 void Engine::expandPixels(const std::uint8_t* pixels) {
+    frameChanged_ = true;
+    if (hostExpands_) {
+        return;
+    }
     const std::size_t count = static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
     std::uint8_t* out = rgba_.data();
     for (std::size_t i = 0; i < count; ++i) {
         const std::array<std::uint8_t, 4> rgba = displayPixel(pixels + i * kPixelBytes);
         std::memcpy(out + i * 4, rgba.data(), 4);
     }
-    frameChanged_ = true;
 }
 
 FrameView Engine::tick(double dt, const AudioFrame& audio) {
+    // A warp started after the last tick has had the time between frames to run.
+    finishWarp();
     FrameView view;
-    view.rgba = rgba_.data();
+    view.rgba = hostExpands_ ? nullptr : rgba_.data();
+    view.pixels = front_.data();
     view.width = width_;
     view.height = height_;
     if (width_ < 2 || height_ < 2 || paused_) {
@@ -620,21 +657,13 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     }
 
     motionTime_ += dt;
-    // Dampened modes move half as far per frame, as mode_motion_dampened did.
-    const float frameStep = static_cast<float>(std::min(dt * kReferenceFps, 1.0));
-    const float step = frameStep * mapParameters_.damping;
     // The shift keeps following peaks while locked, like the rest of the audio motion.
     slideShift_.update(dt, audio, width_);
-    const float perReferenceFrame =
-        static_cast<float>(weightNumerator(width_, height_)) / 256.f * mapParameters_.decay;
-    const float decay = static_cast<float>(std::pow(static_cast<double>(perReferenceFrame), dt * kReferenceFps));
-    // The effects draw into the previous frame before the warp, as the original drew into VS1.
-    effectLayer_.draw(front_.data(), width_, height_, effects_, mapParameters_.mode,
-                      mapParameters_.centerXNorm * static_cast<float>(width_),
-                      mapParameters_.centerYNorm * static_cast<float>(height_), dt * kReferenceFps, audio);
-    // The original added slider1 to the source pointer once per frame, whatever the map's damping.
-    warpPixels(front_.data(), back_.data(), width_, height_, map_.data(), step, decay,
-                slideShift_.x() * frameStep, slideShift_.y() * frameStep, ++ditherSeed_, bands_);
+    if (!warpReady_) {
+        drawEffectsAndWarp(dt, audio);
+    }
+    finishWarp();
+    warpReady_ = false;
     if (!effects_.hideWaveform) {
         drawWaveform(back_.data(), width_, height_, audio, waveform_, mapParameters_.mode, mapParameters_.centerXNorm,
                      mapParameters_.centerYNorm, static_cast<float>(motionTime_), motionTime_ * kReferenceFps, drift_);
@@ -644,7 +673,57 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     expandPixels(back_.data());
     front_.swap(back_);
     frameChanged_ = false;
+    lastDt_ = dt;
+    view.pixels = front_.data();
     return view;
+}
+
+void Engine::drawEffectsAndWarp(double dt, const AudioFrame& audio) {
+    // Dampened modes move half as far per frame, as mode_motion_dampened did.
+    const float frameStep = static_cast<float>(std::min(dt * kReferenceFps, 1.0));
+    const float step = frameStep * mapParameters_.damping;
+    const float perReferenceFrame =
+        static_cast<float>(weightNumerator(width_, height_)) / 256.f * mapParameters_.decay;
+    const float decay = static_cast<float>(std::pow(static_cast<double>(perReferenceFrame), dt * kReferenceFps));
+    // The effects draw into the previous frame before the warp, as the original drew into VS1.
+    effectLayer_.draw(front_.data(), width_, height_, effects_, mapParameters_.mode,
+                      mapParameters_.centerXNorm * static_cast<float>(width_),
+                      mapParameters_.centerYNorm * static_cast<float>(height_), dt * kReferenceFps, audio);
+    // The original added slider1 to the source pointer once per frame, whatever the map's damping.
+    // Clamped here as warpPixels clamps them, so a host warp sees the same values.
+    const WarpJob warp{front_.data(),
+                       back_.data(),
+                       width_,
+                       height_,
+                       map_.data(),
+                       std::clamp(step, 0.f, 1.f),
+                       std::clamp(decay, 0.f, 1.f),
+                       slideShift_.x() * frameStep,
+                       slideShift_.y() * frameStep,
+                       ++ditherSeed_};
+    if (warp_.run != nullptr) {
+        warp_.run(warp_.host, warp);
+        warpPending_ = warp_.wait != nullptr;
+    } else {
+        warpPixels(warp.src, warp.dst, warp.width, warp.height, warp.map, warp.step, warp.decay, warp.shiftX,
+                   warp.shiftY, warp.ditherSeed, bands_);
+    }
+    warpReady_ = true;
+}
+
+void Engine::startNextWarp(const AudioFrame& audio) {
+    if (warp_.run == nullptr || warp_.wait == nullptr || paused_ || warpReady_ || lastDt_ <= 0 || width_ < 2 ||
+        height_ < 2) {
+        return;
+    }
+    drawEffectsAndWarp(lastDt_, audio);
+}
+
+void Engine::finishWarp() {
+    if (warpPending_) {
+        warpPending_ = false;
+        warp_.wait(warp_.host);
+    }
 }
 
 void Engine::updateIdle(double dt) {

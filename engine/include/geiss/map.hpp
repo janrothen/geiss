@@ -35,6 +35,7 @@
 #pragma once
 
 #include "geiss/bands.hpp"
+#include "geiss/buffers.hpp"
 
 #include <array>
 #include <cstdint>
@@ -141,6 +142,8 @@ SourcePoint mode25Source(int x, int y, int width, int height, const MapParameter
 // `bands` may build the rows at the same time. The result does not depend on it.
 void buildMap(std::vector<SourcePoint>& out, int width, int height, const MapParameters& map,
               const BandRunner& bands = {});
+// The same into `out`, which must hold width * height points.
+void buildMap(SourcePoint* out, int width, int height, const MapParameters& map, const BandRunner& bands = {});
 
 // Bytes per simulation pixel: red, green, blue, and the held level, so rows stay aligned and
 // the presenter's expansion is one pass. The original's truecolor buffer was laid out the
@@ -165,6 +168,37 @@ constexpr int kPixelBytes = 4;
 void warpPixels(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
                 const SourcePoint* map, float step, float decay, float shiftX = 0, float shiftY = 0,
                 std::uint32_t ditherSeed = 0, const BandRunner& bands = {});
+
+// One warp of a whole frame, as `warpPixels` takes it. The engine passes `step` and `decay`
+// already clamped to 0...1, as `warpPixels` would clamp them.
+struct WarpJob {
+    const std::uint8_t* src = nullptr;
+    std::uint8_t* dst = nullptr;
+    int width = 0;
+    int height = 0;
+    const SourcePoint* map = nullptr;
+    float step = 1;
+    float decay = 1;
+    float shiftX = 0;
+    float shiftY = 0;
+    std::uint32_t ditherSeed = 0;
+};
+
+// Lets a host run the engine's warp elsewhere, such as on a GPU. Without a host the engine
+// calls `warpPixels` with its band runner.
+// Without `wait`, `run` must leave `job.dst` complete when it returns, as `warpPixels` would
+// have written it. With `wait`, `run` may return at once and finish the warp later: the engine
+// calls `wait` before it touches `job.src`, `job.dst`, or `job.map` again, and `wait` returns
+// with `job.dst` complete. Such a host can let the engine start each frame's warp at the end
+// of the frame before (see `Engine::startNextWarp`).
+struct WarpRunner {
+    using Run = void (*)(void* host, const WarpJob& job);
+    using Wait = void (*)(void* host);
+
+    Run run = nullptr;
+    void* host = nullptr;
+    Wait wait = nullptr;
+};
 
 // Wraps a source column into 0...width-1, as the warp does: the original's newx stepped by
 // FXW-1 until it was in range.

@@ -92,7 +92,11 @@ Look randomLook(Random& random);
 // the share of that channel not held to SDR (see kHeldByte), so fixed textures never glow.
 // The picture itself is opaque.
 struct FrameView {
+    // Null when the host expands the pixels itself (see `Engine::setHostExpands`).
     const std::uint8_t* rgba = nullptr;
+    // The simulation buffer the view shows, kPixelBytes per pixel. Valid until the next tick or
+    // resize. A host that expands the pixels itself reads them here, through `displayPixel`.
+    const std::uint8_t* pixels = nullptr;
     int width = 0;
     int height = 0;
     // False when the pixels are the same as the previous view's, for example while paused,
@@ -102,6 +106,20 @@ struct FrameView {
 
 // The RGBA a simulation pixel shows as: see `FrameView`.
 std::array<std::uint8_t, 4> displayPixel(const std::uint8_t* pixel);
+
+// The engine's shared frame memory, for a host that hands it to a GPU without copying. Each
+// buffer is page-aligned (kBufferPage) and `...Bytes` is its length in whole pages.
+// `generation` changes whenever a resize reallocates them, and only then, so a host can wrap
+// them once per size. The two pixel buffers swap roles every tick; a warp's source and
+// destination are always these two.
+struct EngineBuffers {
+    std::uint8_t* pixelsA = nullptr;
+    std::uint8_t* pixelsB = nullptr;
+    std::size_t pixelBytes = 0;
+    SourcePoint* map = nullptr;
+    std::size_t mapBytes = 0;
+    std::uint64_t generation = 0;
+};
 
 // Truecolor feedback picture: red, green, and blue per pixel, warped alike, as the original's
 // 32-bit mode. Metal receives only the RGBA view.
@@ -115,6 +133,14 @@ public:
     void nextVisual();
     // Lets the host warp and build maps on several threads. The picture is the same either way.
     void setBandRunner(const BandRunner& bands) { bands_ = bands; }
+    // Lets the host run the warp, for example on a GPU. Without one the engine warps on the CPU
+    // with its band runner. The picture is the same up to the warp's own rounding.
+    void setWarpRunner(const WarpRunner& warp) { warp_ = warp; }
+    // When true, the engine leaves the expansion to RGBA to the host: each view carries the
+    // simulation pixels, and `rgba` is null. Off by default. Switching it back on the engine
+    // expands the current frame again, so the next view is complete.
+    void setHostExpands(bool hostExpands);
+    EngineBuffers buffers();
 
     bool paused() const { return paused_; }
     bool locked() const { return locked_; }
@@ -148,11 +174,25 @@ public:
     // The returned pointer is valid until the next tick or resize.
     FrameView tick(double dt, const AudioFrame& audio);
 
+    // With a warp runner that has `wait`, draws the next frame's effects and starts its warp
+    // now, so the warp runs between frames and the next tick only finishes it. Call it after
+    // the host has finished reading the frame the last tick returned, since the effects draw
+    // into it, as the original drew them into the frame it had just shown. The effects take
+    // this audio and the warp the last tick's time step, one frame earlier than an unpipelined
+    // tick would. Does nothing while paused, before the first moving tick after a resize, or
+    // without `wait`; the next tick then draws the effects and warps itself.
+    void startNextWarp(const AudioFrame& audio);
+    // Waits for a warp that `startNextWarp` started. The engine calls it itself before it
+    // touches the frames or the map; a host calls it before it stops serving the warp runner.
+    void finishWarp();
+
 private:
     void pickLook();
     void pickEffects();
     void rebuildMap();
     void expandPixels(const std::uint8_t* pixels);
+    // Draws the effects into the front frame and starts its warp into the back frame.
+    void drawEffectsAndWarp(double dt, const AudioFrame& audio);
     void updateIdle(double dt);
     void drawIdleWave();
 
@@ -169,6 +209,15 @@ private:
     // Whether `rgba_` changed since the last view was returned.
     bool frameChanged_ = true;
     BandRunner bands_{};
+    WarpRunner warp_{};
+    // The last moving tick's time step, which `startNextWarp` uses. 0 after a resize.
+    double lastDt_ = 0;
+    // The warp runner has not finished the warp it was given; see `WarpRunner::wait`.
+    bool warpPending_ = false;
+    // The back frame holds, or will once the warp finishes, the next frame's effects and warp.
+    bool warpReady_ = false;
+    bool hostExpands_ = false;
+    std::uint64_t generation_ = 0;
     MapParameters mapParameters_{};
     Random random_;
     EffectSet effects_{};
@@ -186,10 +235,11 @@ private:
     double idleLevel_ = 0;
     // The idle wave's made-up signal, one value per column, refilled each tick it draws.
     AudioFrame idleFrame_{};
-    std::vector<SourcePoint> map_;
+    // Page-aligned, so a host can share them with a GPU (see `buffers`).
+    PageVector<SourcePoint> map_;
     // kPixelBytes per pixel.
-    std::vector<std::uint8_t> front_;
-    std::vector<std::uint8_t> back_;
+    PageVector<std::uint8_t> front_;
+    PageVector<std::uint8_t> back_;
     std::vector<std::uint8_t> rgba_;
 };
 

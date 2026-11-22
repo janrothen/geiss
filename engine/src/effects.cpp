@@ -579,12 +579,18 @@ void EffectLayer::grid(const Canvas& canvas, int direction) {
     if (direction == 1) {
         shift = -shift;
     }
+    // From 1800 pixels wide each dot is 2x2, as the original's truecolor grid was.
+    const int size = canvas.width >= 1800 ? 2 : 1;
     // One column past the edge, so a column scrolling in from the right is drawn before it
     // reaches its slot. The original reached it by writing into the next row.
     for (int y = 0; y < canvas.height; y += spacing) {
         for (int x = 0; x < canvas.width + spacing; x += spacing) {
-            if (std::uint8_t* p = pixel(canvas.pixels, canvas.width, canvas.height, x + shift, y)) {
-                raiseHeld(p, bright);
+            for (int dy = 0; dy < size; ++dy) {
+                for (int dx = 0; dx < size; ++dx) {
+                    if (std::uint8_t* p = pixel(canvas.pixels, canvas.width, canvas.height, x + shift + dx, y + dy)) {
+                        raiseHeld(p, bright);
+                    }
+                }
             }
         }
     }
