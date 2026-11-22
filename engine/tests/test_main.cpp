@@ -1323,6 +1323,14 @@ void testLookPicking() {
     check(!geiss::isMapMode(12) && geiss::isMapMode(11) && geiss::isMapMode(13), "only mode 12 is left out");
     geiss::Random retired{5};
     check(geiss::randomMapParameters(12, 64, 48, retired).mode == 25, "asking for mode 12 gives the smooth zoom");
+    check(geiss::randomMapParameters(0, 64, 48, retired).mode == 1, "a mode below 1 clamps to mode 1");
+    check(geiss::randomMapParameters(26, 64, 48, retired).mode == 25, "a mode above 25 clamps to mode 25");
+    const geiss::ModeEffects splitterInfo = geiss::modeEffects(12);
+    const geiss::ModeEffects zoomInfo = geiss::modeEffects(25);
+    check(splitterInfo.weights == zoomInfo.weights && splitterInfo.centerDwindle == zoomInfo.centerDwindle &&
+              splitterInfo.minEffects == zoomInfo.minEffects && splitterInfo.maxEffects == zoomInfo.maxEffects &&
+              splitterInfo.solarMax == zoomInfo.solarMax,
+          "mode 12 gets the smooth zoom's effect info");
     check(!geiss::lookAllowed(14, 3) && !geiss::lookAllowed(14, 4), "mode 14 never draws waveforms 3 or 4");
     check(!geiss::lookAllowed(8, 6) && !geiss::lookAllowed(23, 6) && !geiss::lookAllowed(24, 6),
           "modes 8, 23, and 24 never draw the oscilloscope");

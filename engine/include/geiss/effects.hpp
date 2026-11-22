@@ -84,7 +84,8 @@ struct EffectSet {
     int count() const;
 };
 
-// CModeInfo for `mode`, with the original's truecolor adjustment applied to the weights.
+// CModeInfo for `mode`, with the original's truecolor adjustment applied to the weights. The
+// retired mode 12, and any number that is not a map mode, gets mode 25's info.
 ModeEffects modeEffects(int mode);
 
 // The original's pick for a new look. `soundActive` lowers every weight to 0.7, and the

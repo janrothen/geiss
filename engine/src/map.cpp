@@ -281,7 +281,7 @@ float normalTurn(Random& random) {
 }  // namespace
 
 bool isMapMode(int mode) {
-    return mode >= kFirstMapMode && mode <= kLastMapMode && mode != 12;
+    return mode >= kFirstMapMode && mode <= kLastMapMode && mode != kRetiredMapMode;
 }
 
 const char* mapName(int mode) {
@@ -300,7 +300,10 @@ const char* mapName(int mode) {
 
 MapParameters randomMapParameters(int mode, int width, int height, Random& random) {
     MapParameters map;
-    map.mode = isMapMode(mode) ? mode : kLastMapMode;
+    map.mode = std::clamp(mode, kFirstMapMode, kLastMapMode);
+    if (!isMapMode(map.mode)) {
+        map.mode = kLastMapMode;
+    }
     width = std::max(width, 2);
     height = std::max(height, 2);
     const float centerX = (static_cast<float>(width) * 0.5f - 1.f) + (random.unit() * 60.f - 30.f);

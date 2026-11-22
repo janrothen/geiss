@@ -66,7 +66,8 @@ struct BaseMode {
 // CModeInfo for modes 1...16, before the truecolor adjustment. Mode 8's shade weight is
 // 60 because the original chained its assignment into solar_max. Mode 1's solar strength is
 // the truecolor one; the 8-bit table had 400. Mode 12's row is never used, since the port
-// leaves that map out; it stays so the rows keep the original's numbers.
+// leaves that map out (modeEffects gives it mode 25's info); it stays so the rows keep the
+// original's numbers.
 constexpr std::array<BaseMode, 16> kLowModes = {{
     {{220, 150, 10, 680, 4, 170, 400}, 800, 1.f, 1, 2},
     {{750, 500, 750, 750, 0, 0, 0}, 35, 1.f, 1, 5},
@@ -157,8 +158,8 @@ int EffectSet::count() const {
 }
 
 ModeEffects modeEffects(int mode) {
-    const BaseMode& base =
-        mode >= 1 && mode <= static_cast<int>(kLowModes.size()) ? kLowModes[static_cast<std::size_t>(mode - 1)] : kHighMode;
+    const bool low = isMapMode(mode) && mode <= static_cast<int>(kLowModes.size());
+    const BaseMode& base = low ? kLowModes[static_cast<std::size_t>(mode - 1)] : kHighMode;
     ModeEffects info;
     std::copy(base.weights.begin(), base.weights.end(), info.weights.begin());
     info.weights[slot(Effect::Spectral)] = kAddedEffectWeight;

@@ -101,6 +101,8 @@ struct SourcePoint {
 
 constexpr int kFirstMapMode = 1;
 constexpr int kLastMapMode = 25;
+// The original's sideways splitter, which the port leaves out (user decision).
+constexpr int kRetiredMapMode = 12;
 
 // Whether `mode` is one of the maps the port draws. Mode 12, the original's sideways splitter,
 // is left out (user decision); the others keep the original's numbers.
@@ -110,8 +112,8 @@ bool isMapMode(int mode);
 const char* mapName(int mode);
 
 // The per-map random setup in GenerateChunkOfNewMap for `mode`: center, turn, scale,
-// f1...f3, and the mode's own extras. `width` and `height` place the center. A number that is
-// not a map mode gives the smooth zoom, mode 25.
+// f1...f3, and the mode's own extras. `width` and `height` place the center. A number outside
+// 1...25 is clamped into it, and the retired mode 12 gives the smooth zoom, mode 25.
 MapParameters randomMapParameters(int mode, int width, int height, Random& random);
 
 // Full-step source for one pixel of GenerateChunkOfNewMap.

@@ -436,10 +436,12 @@ bool lookAllowed(int mode, int waveform) {
 Look randomLook(Random& random) {
     // FX_Pick_Random_Mode: uniform, then a 1-in-25 chance each of fuzzy (7) and super-perspective (5).
     Look look;
-    // Mode 12 is left out, so it is drawn again.
-    do {
-        look.mode = kFirstMapMode + random.below(kLastMapMode);
-    } while (!isMapMode(look.mode));
+    // Mode 12 is left out: one draw over the other 24 modes, skipping 12, so the mode takes a
+    // single draw as in the original.
+    look.mode = kFirstMapMode + random.below(kLastMapMode - 1);
+    if (look.mode >= kRetiredMapMode) {
+        ++look.mode;
+    }
     if (random.below(25) == 0) {
         look.mode = 7;
     }
