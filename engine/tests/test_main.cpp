@@ -370,7 +370,7 @@ void testBandsMatchSerial() {
 
     constexpr int width = 97;
     constexpr int height = 61;
-    for (const int mode : {5, 6, 7, 12, 25}) {
+    for (const int mode : {5, 6, 7, 10, 25}) {
         geiss::Random random;
         random.state = 11u + static_cast<std::uint32_t>(mode);
         const geiss::MapParameters map = geiss::randomMapParameters(mode, width, height, random);
@@ -1211,7 +1211,7 @@ void testEveryModeBuildsAFiniteMap() {
     for (int mode = geiss::kFirstMapMode; mode <= geiss::kLastMapMode; ++mode) {
         geiss::Random random{static_cast<std::uint32_t>(mode * 31 + 1)};
         const geiss::MapParameters map = geiss::randomMapParameters(mode, 96, 54, random);
-        check(map.mode == mode, "random parameters keep the mode");
+        check(map.mode == (geiss::isMapMode(mode) ? mode : 25), "random parameters keep the mode");
         std::vector<geiss::SourcePoint> sources;
         geiss::buildMap(sources, 96, 54, map);
         bool finite = sources.size() == static_cast<std::size_t>(96 * 54);
@@ -1226,13 +1226,15 @@ void testEveryModeBuildsAFiniteMap() {
     }
 }
 
-void testModeDampingAndDecay() {
+void testModeDamping() {
     for (int mode = geiss::kFirstMapMode; mode <= geiss::kLastMapMode; ++mode) {
+        if (!geiss::isMapMode(mode)) {
+            continue;
+        }
         geiss::Random random{3};
         const geiss::MapParameters map = geiss::randomMapParameters(mode, 64, 48, random);
         const bool dampened = mode <= 16 && mode != 3 && mode != 6;
         checkNear(map.damping, dampened ? 0.5f : 1.f, 0.f, "mode_motion_dampened halves modes 1-16 but 3 and 6");
-        checkNear(map.decay, mode == 12 ? 0.98f : 1.f, 0.f, "only mode 12 fades faster");
     }
 }
 
@@ -1274,13 +1276,6 @@ void testNewModeShapes() {
     check(scaleAt(36, 32, ball) > 0.9f, "mode 16 barely moves near the center");
     check(geiss::mapSource(0, 32, 64, 64, ball).x > 32.f, "mode 16 reads far pixels from the other side");
 
-    // 12 splits sideways: the centerline reads itself, the sides read near the center.
-    const geiss::MapParameters splitter = centeredMap(12);
-    checkNear(geiss::mapSource(32, 10, 64, 64, splitter).x, 32.f, 0.001f, "mode 12 holds the centerline");
-    const geiss::SourcePoint side = geiss::mapSource(60, 10, 64, 64, splitter);
-    check(side.x > 32.f && side.x < 45.f, "mode 12 streaks the sides out of the middle");
-    checkNear(side.y, 10.f, 0.001f, "mode 12 keeps rows");
-
     // 10 scrolls: rows read from 4% further down.
     const geiss::MapParameters scroll = centeredMap(10);
     checkNear(geiss::mapSource(32, 50, 64, 64, scroll).y, 52.f, 0.001f, "mode 10 reads rows from y * 1.04");
@@ -1320,7 +1315,22 @@ void testNewModeShapes() {
 
 void testLookPicking() {
     check(!geiss::lookAllowed(6, 5), "mode 6 never draws waveform 5");
-    check(!geiss::lookAllowed(12, 4) && !geiss::lookAllowed(12, 6), "mode 12 never draws waveforms 4 or 6");
+    bool noSplitter = true;
+    for (int waveform = geiss::kFirstWaveform; waveform <= geiss::kLastWaveform; ++waveform) {
+        noSplitter = noSplitter && !geiss::lookAllowed(12, waveform);
+    }
+    check(noSplitter, "mode 12, the sideways splitter, is never a look");
+    check(!geiss::isMapMode(12) && geiss::isMapMode(11) && geiss::isMapMode(13), "only mode 12 is left out");
+    geiss::Random retired{5};
+    check(geiss::randomMapParameters(12, 64, 48, retired).mode == 25, "asking for mode 12 gives the smooth zoom");
+    check(geiss::randomMapParameters(0, 64, 48, retired).mode == 1, "a mode below 1 clamps to mode 1");
+    check(geiss::randomMapParameters(26, 64, 48, retired).mode == 25, "a mode above 25 clamps to mode 25");
+    const geiss::ModeEffects splitterInfo = geiss::modeEffects(12);
+    const geiss::ModeEffects zoomInfo = geiss::modeEffects(25);
+    check(splitterInfo.weights == zoomInfo.weights && splitterInfo.centerDwindle == zoomInfo.centerDwindle &&
+              splitterInfo.minEffects == zoomInfo.minEffects && splitterInfo.maxEffects == zoomInfo.maxEffects &&
+              splitterInfo.solarMax == zoomInfo.solarMax,
+          "mode 12 gets the smooth zoom's effect info");
     check(!geiss::lookAllowed(14, 3) && !geiss::lookAllowed(14, 4), "mode 14 never draws waveforms 3 or 4");
     check(!geiss::lookAllowed(8, 6) && !geiss::lookAllowed(23, 6) && !geiss::lookAllowed(24, 6),
           "modes 8, 23, and 24 never draw the oscilloscope");
@@ -1340,9 +1350,9 @@ void testLookPicking() {
     check(allowed, "a random look is always an allowed pair");
     bool everyMode = true;
     for (int mode = 1; mode <= 25; ++mode) {
-        everyMode = everyMode && modes[static_cast<std::size_t>(mode)] > 0;
+        everyMode = everyMode && (modes[static_cast<std::size_t>(mode)] > 0) == geiss::isMapMode(mode);
     }
-    check(everyMode, "every map mode comes up");
+    check(everyMode, "every map mode comes up, and mode 12 never does");
     check(modes[5] > modes[1] * 3 / 2 && modes[7] > modes[1] * 3 / 2, "modes 5 and 7 come up more often");
     check(waves[6] < waves[1] && waves[5] > 0 && waves[3] > 0, "waveform 6 comes up less often");
 }
@@ -1595,7 +1605,6 @@ void testModeEffectsTable() {
     check(at(geiss::modeEffects(8), Effect::Shade) == 210, "mode 8 keeps its chained shade weight of 60");
     const geiss::ModeEffects fifteen = geiss::modeEffects(15);
     check(fifteen.minEffects == 0 && fifteen.maxEffects == 1 && at(fifteen, Effect::Chasers) == 0, "mode 15 allows one effect");
-    checkNear(geiss::modeEffects(12).centerDwindle, 0.915f, 0.0001f, "mode 12 darkens its centerline");
     checkNear(geiss::modeEffects(21).centerDwindle, 0.98f, 0.0001f, "modes 20 to 23 darken the center");
     checkNear(geiss::modeEffects(25).centerDwindle, 1.f, 0.0001f, "mode 25 leaves the center alone");
     check(geiss::modeEffects(25).maxEffects == 3, "modes 17 and up allow three effects");
@@ -2329,9 +2338,6 @@ void testCenterDwindle() {
     check(eight[24 * width + 32] == 192 && eight[24 * width + 33] == 192 && eight[23 * width + 32] == 192,
           "mode 8 darkens the center and its neighbors by 0.96");
     check(eight[24 * width + 34] == 200 && eight[0] == 200, "mode 8 leaves the rest alone");
-    const Pixels twelve = filled(12);
-    check(twelve[0 * width + 31] == 183 && twelve[47 * width + 33] == 183 && twelve[0 * width + 34] == 200,
-          "mode 12 darkens a three-pixel column");
     const Pixels zoom = filled(25);
     check(allLevels(zoom, [](std::uint8_t p) { return p == 200; }), "mode 25 leaves the center alone");
 }
@@ -2349,11 +2355,15 @@ void testMode5FollowsNuclide() {
 void testNames() {
     std::set<std::string> maps;
     for (int mode = geiss::kFirstMapMode; mode <= geiss::kLastMapMode; ++mode) {
+        if (!geiss::isMapMode(mode)) {
+            continue;
+        }
         const std::string name = geiss::mapName(mode);
         check(!name.empty() && name != "?", "every map mode has a name");
         maps.insert(name);
     }
-    check(maps.size() == static_cast<std::size_t>(geiss::kLastMapMode), "map names are unique");
+    check(maps.size() == static_cast<std::size_t>(geiss::kLastMapMode - 1), "map names are unique");
+    check(std::string(geiss::mapName(12)) == "?", "mode 12 has no name");
     check(std::string(geiss::mapName(25)) == "Smooth zoom", "mode 25 is the smooth zoom");
     check(std::string(geiss::mapName(1)) == "Constant zoom", "mode 1 is the constant zoom");
     check(std::string(geiss::mapName(0)) == "?", "mode 0 has no name");
@@ -2691,7 +2701,7 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testSilenceFadesAtAnyFrameRate();
     testEngineSlideShift();
     testEveryModeBuildsAFiniteMap();
-    testModeDampingAndDecay();
+    testModeDamping();
     testNewModeShapes();
     testLookPicking();
     testNewWaveforms();

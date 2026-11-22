@@ -65,7 +65,9 @@ struct BaseMode {
 
 // CModeInfo for modes 1...16, before the truecolor adjustment. Mode 8's shade weight is
 // 60 because the original chained its assignment into solar_max. Mode 1's solar strength is
-// the truecolor one; the 8-bit table had 400.
+// the truecolor one; the 8-bit table had 400. Mode 12's row is never used, since the port
+// leaves that map out (modeEffects gives it mode 25's info); it stays so the rows keep the
+// original's numbers.
 constexpr std::array<BaseMode, 16> kLowModes = {{
     {{220, 150, 10, 680, 4, 170, 400}, 800, 1.f, 1, 2},
     {{750, 500, 750, 750, 0, 0, 0}, 35, 1.f, 1, 5},
@@ -156,8 +158,8 @@ int EffectSet::count() const {
 }
 
 ModeEffects modeEffects(int mode) {
-    const BaseMode& base =
-        mode >= 1 && mode <= static_cast<int>(kLowModes.size()) ? kLowModes[static_cast<std::size_t>(mode - 1)] : kHighMode;
+    const bool low = isMapMode(mode) && mode <= static_cast<int>(kLowModes.size());
+    const BaseMode& base = low ? kLowModes[static_cast<std::size_t>(mode - 1)] : kHighMode;
     ModeEffects info;
     std::copy(base.weights.begin(), base.weights.end(), info.weights.begin());
     info.weights[slot(Effect::Spectral)] = kAddedEffectWeight;
@@ -308,7 +310,7 @@ void EffectLayer::draw(std::uint8_t* pixels, int width, int height, const Effect
         if (effects.has(Effect::Nuclide)) {
             silentNuclide(canvas, steps);
         }
-        diminishCenter(canvas, mode, info.centerDwindle, steps);
+        diminishCenter(canvas, info.centerDwindle, steps);
         return;
     }
     if (burstPending_) {
@@ -346,7 +348,7 @@ void EffectLayer::draw(std::uint8_t* pixels, int width, int height, const Effect
     if (effects.has(Effect::Solar)) {
         solar(canvas, info.solarMax, frames);
     }
-    diminishCenter(canvas, mode, info.centerDwindle, steps);
+    diminishCenter(canvas, info.centerDwindle, steps);
 }
 
 // ShadeBobs: one bob wobbles a few pixels around the center and takes four jittered
@@ -769,37 +771,28 @@ void EffectLayer::edges(const Canvas& canvas) {
 }
 
 // Diminish_Center: darkens each channel of the center pixel and its four neighbors each frame, so the
-// zoom does not burn a hot spot there. Mode 12 splits sideways from a vertical line, so
-// it darkens a 3-pixel column instead.
-void EffectLayer::diminishCenter(const Canvas& canvas, int mode, float dwindle, int steps) {
+// zoom does not burn a hot spot there.
+void EffectLayer::diminishCenter(const Canvas& canvas, float dwindle, int steps) {
     if (dwindle >= 0.999f || steps < 1) {
         return;
     }
     const auto factor = static_cast<float>(std::pow(static_cast<double>(dwindle), steps));
     const int cx = static_cast<int>(canvas.centerX);
     const int cy = static_cast<int>(canvas.centerY);
-    auto darken = [&](int x, int y, int floor) {
+    auto darken = [&](int x, int y) {
         if (std::uint8_t* p = pixel(canvas.pixels, canvas.width, canvas.height, x, y)) {
             for (int c = 0; c < 3; ++c) {
-                if (p[c] > floor) {
+                if (p[c] > 1) {
                     p[c] = static_cast<std::uint8_t>(static_cast<float>(p[c]) * factor);
                 }
             }
         }
     };
-    if (mode == 12) {
-        for (int y = 0; y < canvas.height; ++y) {
-            darken(cx - 1, y, 0);
-            darken(cx, y, 0);
-            darken(cx + 1, y, 0);
-        }
-        return;
-    }
-    darken(cx, cy, 1);
-    darken(cx - 1, cy, 1);
-    darken(cx + 1, cy, 1);
-    darken(cx, cy + 1, 1);
-    darken(cx, cy - 1, 1);
+    darken(cx, cy);
+    darken(cx - 1, cy);
+    darken(cx + 1, cy);
+    darken(cx, cy + 1);
+    darken(cx, cy - 1);
 }
 
 }  // namespace geiss

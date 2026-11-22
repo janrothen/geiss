@@ -1,6 +1,6 @@
 # Glossary
 
-Names and short descriptions of the macOS visualizer's 25 maps and 9 layered effects. Each description follows the engine code (`engine/src/map.cpp` and `engine/src/effects.cpp`). The exact formulas and every intentional difference from the original are in the [spec](spec/macos-port.md#prototype-milestone).
+Names and short descriptions of the macOS visualizer's 24 maps and 9 layered effects. The maps keep the original's numbers 1…25; the port leaves out mode 12, the original's sideways splitter. Each description follows the engine code (`engine/src/map.cpp` and `engine/src/effects.cpp`). The exact formulas and every intentional difference from the original are in the [spec](spec/macos-port.md#prototype-milestone).
 
 ## Reading the map descriptions
 
@@ -27,7 +27,6 @@ Some details apply to every map:
 | 9 | Flower petals | The pixels form a checkerboard. Half of them zoom out gently, faster toward the edges. The other half use one fixed scale of 0.8…1.05. Both turn the same way. The two interleaved zooms feed back into each other and grow petal and flower shapes. |
 | 10 | Scroll | Each row reads from 4% further down, so the picture scrolls upward, fastest near the bottom. Each column reads from 3…6% further from the center, so the picture also narrows as it rises. It has no rotation. The horizontal-line waveform sits at three quarters of the height over this map. |
 | 11 | Two rotations | The pixels form a checkerboard of two slightly inward zooms, about 1.00 and 1.02. They turn in opposite directions, one fast and one slow. The interleaved motions twist the picture into a shimmering interference pattern. |
-| 12 | Sideways splitter | Columns read from much closer to a vertical line through the center (the square root of their distance), and rows do not move. The picture streaks sideways out of that line in both directions. It has no rotation. It fades faster than the other maps, and its center darkening covers a 3-pixel column instead of a point. |
 | 13 | Black hole | The scale is above 1 near the center and below 1 beyond about 110 pixels. The center sucks the picture in while the outer area pushes it out toward the edges. The strength varies a little from map to map. |
 | 14 | Split world | The scale follows a cosine of the row, between 0.7 and 1.1, mirrored above and below the center row. Horizontal bands alternately pull in and push out, so the picture splits into upper and lower worlds. |
 | 15 | Radial petals | The scale follows a sine of the angle around the center, with 2…6 lobes. Some directions zoom out faster than the ones between them, and strong lobes pull the picture in. The picture grows rotating petals. |
