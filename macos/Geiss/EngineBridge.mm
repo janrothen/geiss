@@ -105,6 +105,9 @@ constexpr int kCheckInterval = 120;
 @property (nonatomic) BOOL check;
 // With `check`, adds one tick's main-thread time, printed with the next warp check.
 - (void)recordTick:(double)milliseconds;
+// With `check`, the latest audio's peak and whether it counted as silence, printed with the
+// next warp check, so a check run also shows whether the tap hears anything.
+- (void)recordAudioPeak:(float)peak silent:(BOOL)silent;
 
 @end
 
@@ -125,6 +128,13 @@ constexpr int kCheckInterval = 120;
     std::vector<uint8_t> reference_;
     double tickMilliseconds_;
     int ticks_;
+    float peak_;
+    BOOL silent_;
+}
+
+- (void)recordAudioPeak:(float)peak silent:(BOOL)silent {
+    peak_ = std::max(peak_, peak);
+    silent_ = silent;
 }
 
 - (void)recordTick:(double)milliseconds {
@@ -229,11 +239,12 @@ constexpr int kCheckInterval = 120;
             over += difference > 1 ? 1 : 0;
         }
         std::printf("Geiss warp check: %dx%d, largest difference %d, %zu bytes above 1, %.3f ms GPU, "
-                    "%.3f ms per tick on the main thread\n",
+                    "%.3f ms per tick on the main thread, audio peak %.3f%s\n",
                     job.width, job.height, largest, over, (commands.GPUEndTime - commands.GPUStartTime) * 1000.0,
-                    ticks_ > 0 ? tickMilliseconds_ / ticks_ : 0.0);
+                    ticks_ > 0 ? tickMilliseconds_ / ticks_ : 0.0, peak_, silent_ ? " (silent)" : "");
         tickMilliseconds_ = 0;
         ticks_ = 0;
+        peak_ = 0;
         std::fflush(stdout);
     }
 }
@@ -403,6 +414,7 @@ void runWarpOnGPU(void* host, const geiss::WarpJob& job) {
     const geiss::FrameView view = engine_->tick(dt, frame_);
     if (gpu_.check) {
         [gpu_ recordTick:(CACurrentMediaTime() - start) * 1000.0];
+        [gpu_ recordAudioPeak:frame_.peak silent:frame_.silent ? YES : NO];
     }
     shown_ = view.pixels;
     shownWidth_ = view.width;
