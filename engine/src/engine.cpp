@@ -424,12 +424,11 @@ const char* waveformName(int waveform) {
 }
 
 bool lookAllowed(int mode, int waveform) {
-    if (mode < kFirstMapMode || mode > kLastMapMode || waveform < kFirstWaveform || waveform > kLastWaveform) {
+    if (!isMapMode(mode) || waveform < kFirstWaveform || waveform > kLastWaveform) {
         return false;
     }
     // The pairs GenerateChunkOfNewMap re-rolls.
     return !((mode == 6 && waveform == 5) ||
-             (mode == 12 && (waveform == 4 || waveform == 6)) ||
              (mode == 14 && (waveform == 3 || waveform == 4)) ||
              ((mode == 8 || mode == 23 || mode == 24) && waveform == 6));
 }
@@ -437,7 +436,10 @@ bool lookAllowed(int mode, int waveform) {
 Look randomLook(Random& random) {
     // FX_Pick_Random_Mode: uniform, then a 1-in-25 chance each of fuzzy (7) and super-perspective (5).
     Look look;
-    look.mode = kFirstMapMode + random.below(kLastMapMode);
+    // Mode 12 is left out, so it is drawn again.
+    do {
+        look.mode = kFirstMapMode + random.below(kLastMapMode);
+    } while (!isMapMode(look.mode));
     if (random.below(25) == 0) {
         look.mode = 7;
     }
@@ -683,7 +685,7 @@ void Engine::drawEffectsAndWarp(double dt, const AudioFrame& audio) {
     const float frameStep = static_cast<float>(std::min(dt * kReferenceFps, 1.0));
     const float step = frameStep * mapParameters_.damping;
     const float perReferenceFrame =
-        static_cast<float>(weightNumerator(width_, height_)) / 256.f * mapParameters_.decay;
+        static_cast<float>(weightNumerator(width_, height_)) / 256.f;
     const float decay = static_cast<float>(std::pow(static_cast<double>(perReferenceFrame), dt * kReferenceFps));
     // The effects draw into the previous frame before the warp, as the original drew into VS1.
     effectLayer_.draw(front_.data(), width_, height_, effects_, mapParameters_.mode,

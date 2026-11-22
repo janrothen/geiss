@@ -113,14 +113,14 @@ Intentional differences:
 
 ## Prototype milestone
 
-The picture has all 25 of the original's map modes and all 6 of its waveforms. Each frame samples the previous frame through the map, red, green, and blue alike, darkens it, and draws the waveform.
+The picture has 24 of the original's 25 map modes and all 6 of its waveforms. Mode 12, the sideways splitter, is left out (user decision): its picture streaked out of one vertical line and looked poor. The other modes keep the original's numbers. Each frame samples the previous frame through the map, red, green, and blue alike, darkens it, and draws the waveform.
 
 Maps, from `GenerateChunkOfNewMap`. `dx` and `dy` are the pixel offset from the map center. Most modes compute a scale and read from the center plus that offset, rotated by the map's turn and multiplied by the scale. `r640` is the offset's length on a 640-wide frame, as the original's `rmult` made it, so a mode keeps its look at any simulation size. Modes 17 and up use `nx` and `ny`, the offset times `2 / width`. The [glossary](../glossary.md) describes each map and effect in plain words.
 
 - 1: constant zoom, a constant scale of 0.985 − 0.12·u². 2: outward zoom, a constant scale of 1.00…1.02. 3: terra-landing, `0.95 − dy·(480/H)·0.0005`. 4: a sphere, `0.9 + r640·0.0025·0.14`. 5: super-perspective, `f2 − f1·r640/200·1.7` with the nuclide effect, `f2 − f1·√(r640/200)` without.
 - 6: a vortex field. Five push centers each push, or swirl one way or the other, weighted by `1 / (d² + 0.1)`, normalized to 1.9 pixels with a small drift. Distances and the move use the 640-wide reference.
 - 7: fuzzy, `f1 − r640·f2` plus a fixed per-pixel jitter of 0…0.0495. 8: ripples, `0.85 + 0.1·sin(√r640·f1)`. 9: flower petals, `f1 − r640·f2` on even pixels and a constant `scale2` on odd pixels.
-- 10: a scroll. Rows read from `y·1.04`, and columns stretch from the center by `1.03 + 0.03·y/H`. 11: two rotations, each with its own scale, dithered by pixel parity. 12: a sideways splitter. Columns read from `±√|dx|` near the centerline (on the 640 reference), and the picture fades faster (0.98 per frame).
+- 10: a scroll. Rows read from `y·1.04`, and columns stretch from the center by `1.03 + 0.03·y/H`. 11: two rotations, each with its own scale, dithered by pixel parity.
 - 13: a black hole, `(1.04 − r640^1.5·0.00025·0.14 − 1)·f1 + 1`. 14: a split world, `0.9 + 0.2·cos(dy·12/H)`. 15: radial petals, `f2 + f3·sin(angle·f1)` with 2…6 petals. 16: a crystal ball, `1.05 − r640²·0.00025·0.09`, at least −1.5, so far pixels read from the other side.
 - 17: a horizontal tunnel, `0.97 − ny²·0.40`. 18: a vertical tunnel, `0.97 − nx²·0.40`. 19: a vortex, `1.04 − 0.25·length`. 20: terra, `1.15 − √(ny + 1.4)·0.20`. 21: diced cubes, `0.95 − ⌊|nx|·10⌋·0.03 − ⌊|ny|·10⌋·0.03`. 22: phonic rings, `0.95 − ⌊length·10⌋·0.04`. 23: fast rings, `0.95 − (⌊length·20⌋ mod 4)·0.12`. 24: a fast swirl, scale 0.96 and turn 0.05. 25: the smooth zoom, `zoom / (zoom + length)` with zoom 2…6.
 
@@ -150,9 +150,9 @@ Waveforms, from `RenderWave`. A −1…1 sample covers about 35% of the height b
 Intentional difference: the original walked the first frames of its capture buffer for waveforms 5 and 6. Here those points spread across the whole column wave.
 
 Picking follows the original:
-- A mode is chosen uniformly from 1…25, then has a 1-in-25 chance each of becoming fuzzy (7) or super-perspective (5).
+- A mode is chosen uniformly from 1…25, drawn again while it is 12, then has a 1-in-25 chance each of becoming fuzzy (7) or super-perspective (5).
 - A waveform is chosen with 1…5 at 3/17 each and 6 at 2/17.
-- The waveform is re-chosen while the pair is excluded: mode 6 with waveform 5, mode 12 with waveforms 4 or 6, mode 14 with waveforms 3 or 4, and modes 8, 23, or 24 with waveform 6.
+- The waveform is re-chosen while the pair is excluded: mode 6 with waveform 5, mode 14 with waveforms 3 or 4, and modes 8, 23, or 24 with waveform 6.
 - Next and the timer always change the pair.
 
 ### Layered effects
@@ -170,13 +170,13 @@ Nine overlays are ported from `Effects.h` and `main.cpp`: the original's seven l
 - **Edges (mode 6):** three rows along the top and three along the bottom take noise of 0…39 over a slow sine of 0…198 per channel, each channel with its own rates, drifting sideways (left and right differently at top and bottom), so the vortex field pulls a moving, color-shifting texture in from both edges. The rows are rewritten once per reference frame, so the texture is the same at any refresh rate. They belong to the map, like the center darkening, and are not an effect pick, so they do not count toward the mode's limits. Like the effects, they rest in silence.
 - **Shade bobs:** one bob wobbles a few pixels around the center and takes four jittered steps a frame. Each of its channels switches on while `sin(floatframe · micro_c)` is between 0 and 1, about half the time, at its own rate of 0.08…0.17, so its color drifts; a channel that is on adds 5 to its pixel and 3 to the four beside it, up to 250.
 
-Each map also darkens its center every frame (`center_dwindle`), so the zoom does not burn a hot spot there: 0.99 for modes 3 and 5, 0.98 for 4, 13, 14, 16, and 20…23, 0.985 for 7 and 9, 0.96 for 8, and 0.915 for 12. Mode 12 darkens a three-pixel column, since it splits sideways from a vertical line. The others darken the center pixel and its four neighbors. Each channel darkens alike.
+Each map also darkens its center every frame (`center_dwindle`), so the zoom does not burn a hot spot there: 0.99 for modes 3 and 5, 0.98 for 4, 13, 14, 16, and 20…23, 0.985 for 7 and 9, and 0.96 for 8. Each darkens the center pixel and its four neighbors. Each channel darkens alike.
 
 Picking follows `CModeInfo` and `Clip_Num_Effects`:
 - Each mode gives each effect a weight out of 1000. The weights use the original's truecolor adjustment: nuclide × 1.3, chasers − 50, dots and bar + 220, shade + 150, each kept within 0…900, and grid + 8.
 - Spectral dots and crystals have a weight of 100 on every map. The original gave them none (the spectral dots had 0 everywhere, and crystals were never called), so this is the port's own assumption, to judge by eye. With sound that is 70, so each comes up in about one look in 14 before the mode's maximum drops extras.
 - Each effect gets one roll. While sound is playing, every weight is multiplied by 0.7.
-- Without sound, effects are added until the mode's minimum is met. Then effects are dropped at random down to the mode's maximum. Most modes have a minimum of 1 and a maximum of 2. Mode 2 allows up to 5, and modes 17 and up 1…3. Modes 10, 11, 12, and 15 have no minimum, so their looks can have no effects; their maximums are 2, 4, 2, and 1. While sound is playing the minimum is not enforced, so a look on any mode can open with no effects.
+- Without sound, effects are added until the mode's minimum is met. Then effects are dropped at random down to the mode's maximum. Most modes have a minimum of 1 and a maximum of 2. Mode 2 allows up to 5, and modes 17 and up 1…3. Modes 10, 11, and 15 have no minimum, so their looks can have no effects; their maximums are 2, 4, and 1. While sound is playing the minimum is not enforced, so a look on any mode can open with no effects.
 - Chasers come as one or two. A grid turns the bar off. The grid's direction is random.
 - Effects are part of the look. Lock holds them. Next and the 20-second timer pick a new set for the new map. Pause freezes them with the picture.
 

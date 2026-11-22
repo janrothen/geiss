@@ -169,20 +169,6 @@ SourcePoint vortexSource(int x, int y, int width, int height, const MapParameter
                        static_cast<float>(y) + (ty + 0.6f) * fromReference};
 }
 
-// Mode 12: columns away from the centerline read from much closer to it, so the picture
-// streaks sideways out of the middle. Offsets use the 640-wide reference.
-SourcePoint splitterSource(const Offset& offset, int width) {
-    const float toReference = kReferenceWidth / static_cast<float>(width);
-    const float dx = offset.dx * toReference;
-    float source = 0;
-    if (dx < -0.5f) {
-        source = -std::sqrt(-dx) + 0.9f;
-    } else if (dx > 0.5f) {
-        source = std::sqrt(dx) - 0.9f;
-    }
-    return SourcePoint{offset.centerX + source / toReference, offset.centerY + offset.dy};
-}
-
 // Modes 1...16 that compute one scale per pixel. Dither modes pick a rotation by parity.
 float lowModeScale(const Offset& offset, int height, int x, int y, const MapParameters& map) {
     const float r = offset.r640;
@@ -278,9 +264,6 @@ SourcePoint sourceAt(int x, int y, int width, int height, const MapParameters& m
         const float stretch = 1.03f + 0.03f * static_cast<float>(y) / static_cast<float>(height);
         return SourcePoint{offset.dx * stretch + offset.centerX, static_cast<float>(y) * 1.04f};
     }
-    if (map.mode == 12) {
-        return splitterSource(offset, width);
-    }
     if (map.mode >= 17) {
         return place(offset, highModeScale(offset, map), rotations.first);
     }
@@ -297,15 +280,19 @@ float normalTurn(Random& random) {
 
 }  // namespace
 
+bool isMapMode(int mode) {
+    return mode >= kFirstMapMode && mode <= kLastMapMode && mode != 12;
+}
+
 const char* mapName(int mode) {
     static constexpr std::array<const char*, kLastMapMode> kNames = {
         "Constant zoom", "Outward zoom", "Terra-landing", "Sphere", "Super-perspective",
         "Vortex field", "Fuzzy", "Ripples", "Flower petals", "Scroll",
-        "Two rotations", "Sideways splitter", "Black hole", "Split world", "Radial petals",
+        "Two rotations", "?", "Black hole", "Split world", "Radial petals",
         "Crystal ball", "Horizontal tunnel", "Vertical tunnel", "Vortex", "Terra",
         "Diced cubes", "Phonic rings", "Fast rings", "Fast swirl", "Smooth zoom",
     };
-    if (mode < kFirstMapMode || mode > kLastMapMode) {
+    if (!isMapMode(mode)) {
         return "?";
     }
     return kNames.at(static_cast<std::size_t>(mode - kFirstMapMode));
@@ -313,7 +300,7 @@ const char* mapName(int mode) {
 
 MapParameters randomMapParameters(int mode, int width, int height, Random& random) {
     MapParameters map;
-    map.mode = std::clamp(mode, kFirstMapMode, kLastMapMode);
+    map.mode = isMapMode(mode) ? mode : kLastMapMode;
     width = std::max(width, 2);
     height = std::max(height, 2);
     const float centerX = (static_cast<float>(width) * 0.5f - 1.f) + (random.unit() * 60.f - 30.f);
@@ -392,9 +379,6 @@ MapParameters randomMapParameters(int mode, int width, int height, Random& rando
             separateTurn2 = true;
             break;
         }
-        case 12:
-            map.decay = 0.98f;
-            break;
         case 13:
             turn = normalTurn(random);
             map.f1 = 0.92f + 0.16f * random.unit();

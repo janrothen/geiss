@@ -141,7 +141,7 @@ private:
     void drawSpectral(const Canvas& canvas, float strength);
     void crystals(const Canvas& canvas, int steps);
     void edges(const Canvas& canvas);
-    void diminishCenter(const Canvas& canvas, int mode, float dwindle, int steps);
+    void diminishCenter(const Canvas& canvas, float dwindle, int steps);
 
     static constexpr int kTrail = 20;
 

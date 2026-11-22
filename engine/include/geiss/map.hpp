@@ -65,7 +65,7 @@ struct VortexPush {
     int type = 0;
 };
 
-// One Geiss map, from GenerateChunkOfNewMap. `mode` is its number, 1...25.
+// One Geiss map, from GenerateChunkOfNewMap. `mode` is its number, 1...25 except 12.
 // Centers are fractions of the frame so a resize keeps the look.
 struct MapParameters {
     int mode = 25;
@@ -85,8 +85,6 @@ struct MapParameters {
     float f3 = 0;
     // mode_motion_dampened: modes 1, 2, 4, 5, and 7...16 move half as far per frame.
     float damping = 1;
-    // Extra decay per frame at 30 fps. Mode 12 fades faster (weightsum * 0.98).
-    float decay = 1;
     // Mode 7's per-pixel jitter, standing in for the original's rand_array.
     std::uint32_t noiseSeed = 1;
     // Mode 6's push centers. The original creates ten and uses five.
@@ -104,18 +102,23 @@ struct SourcePoint {
 constexpr int kFirstMapMode = 1;
 constexpr int kLastMapMode = 25;
 
-// The map's name from docs/glossary.md, or "?" for an unknown number.
+// Whether `mode` is one of the maps the port draws. Mode 12, the original's sideways splitter,
+// is left out (user decision); the others keep the original's numbers.
+bool isMapMode(int mode);
+
+// The map's name from docs/glossary.md, or "?" for a number that is not a map mode.
 const char* mapName(int mode);
 
 // The per-map random setup in GenerateChunkOfNewMap for `mode`: center, turn, scale,
-// f1...f3, and the mode's own extras. `width` and `height` place the center.
+// f1...f3, and the mode's own extras. `width` and `height` place the center. A number that is
+// not a map mode gives the smooth zoom, mode 25.
 MapParameters randomMapParameters(int mode, int width, int height, Random& random);
 
 // Full-step source for one pixel of GenerateChunkOfNewMap.
 // dx and dy are the pixel offset from the map center, and r640 is their length on a
 // 640-wide reference, as the original's rmult made it. Most modes compute a scale and
 // read from center + rotate(dx, dy) * scale; modes 1, 9, and 11 alternate two
-// rotations by pixel parity; modes 6, 10, and 12 use custom motion vectors.
+// rotations by pixel parity; modes 6 and 10 use custom motion vectors.
 //   1: scale1 constant.                 2: scale1 constant, above 1 (outward).
 //   3: 0.95 - dy*(480/H)*0.0005.        4: 0.9 + r640*0.0025*0.14 (sphere).
 //   5: f2 - f1*r640/200*1.7 with the nuclide, f2 - f1*sqrt(r640/200) without.
@@ -123,7 +126,7 @@ MapParameters randomMapParameters(int mode, int width, int height, Random& rando
 //   7: f1 - r640*f2 + jitter (fuzzy).   8: 0.85 + 0.1*sin(sqrt(r640)*f1) (ripples).
 //   9: f1 - r640*f2, dithered with scale2 (petals).
 //  10: x stretched from the center, y read from y*1.04 (scroll).
-//  11: two rotations dithered.          12: sideways splitter.
+//  11: two rotations dithered.
 //  13: (1.04 - r640^1.5*0.00025*0.14 - 1)*f1 + 1 (black hole).
 //  14: 0.9 + 0.2*cos(dy*12/H) (split world).
 //  15: f2 + f3*sin(angle*f1) (petals).  16: 1.05 - r640^2*0.00025*0.09, at least -1.5 (crystal ball).
