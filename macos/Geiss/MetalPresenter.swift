@@ -49,7 +49,7 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     /// True between an upload's wait and the draw that releases that slot.
     private var slotHeld = false
     private weak var view: MTKView?
-    /// HDR highlights: the brightest palette levels rise above SDR white, up to this many
+    /// HDR highlights: the hottest pixels rise above SDR white, up to this many
     /// times white or the screen's current headroom, whichever is lower.
     static let highlightCap: Float = 2.5
     /// Whether the screen's view is drawn with highlights. True only on an HDR screen.
@@ -132,7 +132,7 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         inFlight.wait()
         slotHeld = true
         if textures.first?.width != width || textures.first?.height != height {
-            // The sRGB format lets the texture unit decode the palette colors before it filters
+            // The sRGB format lets the texture unit decode the colors before it filters
             // them, so the shader does not. Alpha, the highlight level, stays linear.
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: .rgba8Unorm_srgb,
@@ -212,7 +212,7 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
             layer.wantsExtendedDynamicRangeContent = highlightsOn
         }
         headroom = Float(screen?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
-        // The palette was drawn for an unmanaged 8-bit screen, which showed its values in the
+        // The original drew for an unmanaged screen, which showed its values in the
         // screen's own color space. Tagging the drawable with a linear copy of that space keeps
         // those colors on any screen. A screen whose profile has no linear form falls back to
         // Display P3 or sRGB, whichever it can show.
@@ -249,11 +249,10 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
         return 1.0 + (gain - 1.0) * smoothstep(0.8, 1.0, level);
     }
 
-    // RGB is the palette color, encoded like sRGB and decoded by the texture's sRGB format, so a
-    // sample is already linear. Alpha is the highlight level: the palette
-    // index, capped by the color's brightness next to the palette's brightest. Fresh lines,
-    // beat hits, and bright effects glow on an HDR screen while trails keep their SDR
-    // brightness.
+    // RGB is the picture's color, encoded like sRGB and decoded by the texture's sRGB format, so a
+    // sample is already linear. Alpha is the highlight level, which rises with the pixel's
+    // brightest channel above full SDR brightness. Fresh lines, beat hits, and bright effects
+    // glow on an HDR screen while trails keep their SDR brightness.
     fragment float4 geissFragment(Varying in [[stage_in]], texture2d<float> image [[texture(0)]],
                                   constant float& gain [[buffer(0)]]) {
         constexpr sampler linear(filter::linear, address::clamp_to_edge);

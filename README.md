@@ -22,7 +22,7 @@ For a YouTube video showing Geiss in action, please click:
 
 [`macos/`](macos/README.md) is a standalone window for Apple Silicon, on macOS 14.2 or later. It draws a few Geiss maps and waveforms, and the picture follows the sound coming out of the Mac.
 
-- The looks are a horizontal tunnel, a vortex, a fast swirl, and a smooth zoom, with one line, two lines, or an X-Y oscilloscope. Each look picks a palette from the original's generator. The picture changes about every 20 seconds.
+- The looks are a horizontal tunnel, a vortex, a fast swirl, and a smooth zoom, with one line, two lines, or an X-Y oscilloscope. The picture is truecolor, and the line takes its color from the music: bass red, middle green, treble blue. The picture changes about every 20 seconds.
 - Sensitivity is remembered. Pause, lock, and next visual are the other controls.
 - Visual > Tone plays a steady note. Visual > Silence lets the line fade. Otherwise the window listens to the Mac's output.
 - The picture engine is portable C++ in [`engine/`](engine). Metal displays it. The Windows screensaver and plug-in sources stay on their own build.
