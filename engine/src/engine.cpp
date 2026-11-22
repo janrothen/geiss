@@ -47,13 +47,11 @@ namespace {
 constexpr double kReferenceFps = 30.0;
 constexpr double kMaxDt = 0.1;
 constexpr double kMapInterval = 20.0;
-// PutPalette blended to a new palette over 18 steps, counted down twice per frame:
-// about 9 frames, or 0.3 s at 30 fps.
-constexpr double kPaletteBlendSeconds = 0.3;
-// The original's SoundEmpty: true after frames_til_auto_switch * 2 (1100) frames of silence
-// at 30 fps. Only then does a new palette get the brighter silent gamma, so a short gap
-// between tracks, or the first look after launch, keeps the normal gamma.
-constexpr double kSoundEmptySeconds = 1100.0 / kReferenceFps;
+// The presenter's highlight level rises from 0 at this stored channel value to 255 at
+// kHighlightFull. The display doubles each channel, so 128 is already full SDR brightness;
+// only the hottest cores above it glow on an HDR screen.
+constexpr int kHighlightStart = 128;
+constexpr int kHighlightFull = 208;
 // When a look is due during beat mode, it waits for a big beat, as the finished map did in
 // the original. The threshold starts at 1.10 and relaxes by 0.2.
 // Intentional difference: the original relaxed over its 550-frame (about 18 s) switch
@@ -69,13 +67,15 @@ constexpr double kBigBeatRelaxSeconds = kMaxBeatWait;
 // picture faded to black. Here, once silence has lasted kIdleWaitSeconds, a made-up signal
 // rises over kIdleRiseSeconds and is drawn with the look's own waveform: the line becomes
 // a slow swell, two lines braid, the circle opens into a breathing flower, and the
-// oscilloscope traces a 3:2 Lissajous figure that slowly turns and morphs. It stays in the
-// palette's lower half, so it is calm and never glows on HDR.
+// oscilloscope traces a 3:2 Lissajous figure that slowly turns and morphs. It is drawn in
+// the drift color at a low brightness, so it is calm and never glows on HDR.
 constexpr double kIdleWaitSeconds = 1.5;
 constexpr double kIdleRiseSeconds = 4.0;
-// Palette indices: the wave breathes between about 70 and 130 over kIdleBreathSeconds.
-constexpr float kIdleBright = 100.f;
-constexpr float kIdleBreath = 30.f;
+// On RenderWave's 0...155 brightness scale: the wave breathes between about 26 and 46 over
+// kIdleBreathSeconds. The drift's brightest channel peaks near 2.5 times that, about 114,
+// which shows below full brightness and never reaches the highlight start.
+constexpr float kIdleBright = 36.f;
+constexpr float kIdleBreath = 10.f;
 // The hand-off. Sound whose line would draw dimmer than the idle wave's darkest keeps the
 // idle wave, so quiet music never looks darker than silence; its faint line plays inside it.
 // Brighter sound fades the idle wave out over kIdleFadeSeconds instead of cutting it, and
@@ -121,30 +121,35 @@ float columnSample(const std::vector<float>& samples, int x, int width) {
 }
 
 // RenderWave's plugin brightness: base = current_vol*4 + avg_vol*0.4 - 10, clamped to
-// 0...155. The original then tinted that RGB base up to about 255; here 0...155 maps
-// onto the palette's 0...255 index range, so normal listening levels draw at full brightness.
+// 0...155. The wave color tints it per channel, up to 255.
 constexpr float kBaseCeiling = 155.f;
 
 float waveBrightness(float volume, float averageVolume) {
-    const float base = std::clamp(volume * 4.f + averageVolume * 0.4f - 10.f, 0.f, kBaseCeiling);
-    return base * 255.f / kBaseCeiling;
+    return std::clamp(volume * 4.f + averageVolume * 0.4f - 10.f, 0.f, kBaseCeiling);
 }
 
-// How a waveform's points are drawn: the palette index, and whether each point is a soft
-// spot instead of one sharp pixel.
+// How a waveform's points are drawn: the color, and whether each point is a soft spot
+// instead of one sharp pixel.
 struct Ink {
-    int bright = 0;
+    Rgb color;
     bool soft = false;
 };
 
-void plotPixel(std::uint8_t* indices, int width, int height, int x, int y, int bright) {
-    if (x < 0 || y < 0 || x >= width || y >= height || bright < 1) {
+void raise(std::uint8_t& channel, int value) {
+    if (channel < value) {
+        channel = static_cast<std::uint8_t>(std::min(value, 255));
+    }
+}
+
+// Max-blends each channel, as every original waveform did in truecolor.
+void plotPixel(std::uint8_t* pixels, int width, int height, int x, int y, Rgb color) {
+    if (x < 0 || y < 0 || x >= width || y >= height) {
         return;
     }
-    std::uint8_t& pixel = indices[static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)];
-    if (pixel < static_cast<std::uint8_t>(bright)) {
-        pixel = static_cast<std::uint8_t>(bright);
-    }
+    std::uint8_t* p = pixels + (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)) * kPixelBytes;
+    raise(p[0], color.r);
+    raise(p[1], color.g);
+    raise(p[2], color.b);
 }
 
 // A soft spot's 5x5 falloff, close to a Gaussian with a radius of about one pixel, in
@@ -159,14 +164,15 @@ constexpr std::array<int, 25> kSoftSpot = {
 
 }  // namespace
 
-void plotSoftSpot(std::uint8_t* indices, int width, int height, int x, int y, int bright) {
-    if (indices == nullptr) {
+void plotSoftSpot(std::uint8_t* pixels, int width, int height, int x, int y, Rgb color) {
+    if (pixels == nullptr) {
         return;
     }
     for (int dy = -2; dy <= 2; ++dy) {
         for (int dx = -2; dx <= 2; ++dx) {
             const int weight = kSoftSpot.at((static_cast<std::size_t>(dy + 2) * 5) + static_cast<std::size_t>(dx + 2));
-            plotPixel(indices, width, height, x + dx, y + dy, bright * weight / 256);
+            plotPixel(pixels, width, height, x + dx, y + dy,
+                      {color.r * weight / 256, color.g * weight / 256, color.b * weight / 256});
         }
     }
 }
@@ -177,25 +183,25 @@ float wrappedPhase(double radiansPerSecond, double seconds) {
 
 namespace {
 
-void plot(std::uint8_t* indices, int width, int height, int x, int y, Ink ink) {
+void plot(std::uint8_t* pixels, int width, int height, int x, int y, Ink ink) {
     if (ink.soft) {
-        plotSoftSpot(indices, width, height, x, y, ink.bright);
+        plotSoftSpot(pixels, width, height, x, y, ink.color);
     } else {
-        plotPixel(indices, width, height, x, y, ink.bright);
+        plotPixel(pixels, width, height, x, y, ink.color);
     }
 }
 
 // RenderWave waveform 1: one smoothed line, drawn with a max blend.
 // It reads the mono columns and stays on the frame center. Over mode 10's scroll the
 // original lowered it to three quarters of the height.
-void drawLine(std::uint8_t* indices, int width, int height, const AudioFrame& audio, Ink ink, int mode) {
+void drawLine(std::uint8_t* pixels, int width, int height, const AudioFrame& audio, Ink ink, int mode) {
     const float amplitude = static_cast<float>(height) * kWaveFraction;
     const float yCenter = static_cast<float>(height) * (mode == 10 ? 0.75f : 0.5f);
     float previous = columnSample(audio.samples, 0, width) * amplitude + yCenter;
     for (int x = 0; x < width; ++x) {
         const float z = columnSample(audio.samples, x, width) * amplitude + yCenter;
         previous = previous * 0.9f + z * 0.1f;
-        plot(indices, width, height, x, static_cast<int>(previous), ink);
+        plot(pixels, width, height, x, static_cast<int>(previous), ink);
     }
 }
 
@@ -203,7 +209,7 @@ void drawLine(std::uint8_t* indices, int width, int height, const AudioFrame& au
 // map center, right sits 12% below, and both use 0.7 of the line amplitude.
 // Intentional difference: each column uses that column's channel. The original
 // interleaved buffer repeated each stereo pair across two pixels.
-void drawTwoLines(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
+void drawTwoLines(std::uint8_t* pixels, int width, int height, const AudioFrame& audio,
                   Ink ink, float centerYNorm) {
     const float amplitude = static_cast<float>(height) * kWaveFraction * 0.7f;
     const float center = centerYNorm * static_cast<float>(height);
@@ -216,8 +222,8 @@ void drawTwoLines(std::uint8_t* indices, int width, int height, const AudioFrame
     for (int x = 0; x < width; ++x) {
         previousLeft = previousLeft * 0.9f + (columnSample(left, x, width) * amplitude + upper) * 0.1f;
         previousRight = previousRight * 0.9f + (columnSample(right, x, width) * amplitude + lower) * 0.1f;
-        plot(indices, width, height, x, static_cast<int>(previousLeft), ink);
-        plot(indices, width, height, x, static_cast<int>(previousRight), ink);
+        plot(pixels, width, height, x, static_cast<int>(previousLeft), ink);
+        plot(pixels, width, height, x, static_cast<int>(previousRight), ink);
     }
 }
 
@@ -225,7 +231,7 @@ void drawTwoLines(std::uint8_t* indices, int width, int height, const AudioFrame
 // rocked around the map center. The original seeds the smoother with the unscaled first pair.
 // Intentional difference: the original walks the first 314 frames of the capture buffer.
 // This frame is already one sample per column, so the 314 points cover that whole wave.
-void drawScope(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
+void drawScope(std::uint8_t* pixels, int width, int height, const AudioFrame& audio,
                Ink ink, float centerXNorm, float centerYNorm, float motionTime) {
     const float amplitude = static_cast<float>(height) * kWaveFraction * 1.2f;
     const float centerX = centerXNorm * static_cast<float>(width);
@@ -243,27 +249,27 @@ void drawScope(std::uint8_t* indices, int width, int height, const AudioFrame& a
         py2 = py2 * 0.5f + 0.5f * columnSample(right, column, width) * amplitude;
         const float px = px2 * cosine + py2 * sine;
         const float py = px2 * -sine + py2 * cosine;
-        plot(indices, width, height, static_cast<int>(px + centerX), static_cast<int>(py + centerY), ink);
+        plot(pixels, width, height, static_cast<int>(px + centerX), static_cast<int>(py + centerY), ink);
     }
 }
 
 // RenderWave waveform 3: one smoothed vertical line through the map center. Row y reads
 // the sample of column y, as the original read its buffer by row.
-void drawVerticalLine(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
+void drawVerticalLine(std::uint8_t* pixels, int width, int height, const AudioFrame& audio,
                       Ink ink, float centerXNorm) {
     const float amplitude = static_cast<float>(height) * kWaveFraction;
     const float xCenter = centerXNorm * static_cast<float>(width);
     float previous = columnSample(audio.samples, 0, width) * amplitude + xCenter;
     for (int y = 0; y < height; ++y) {
         previous = previous * 0.9f + (columnSample(audio.samples, y, width) * amplitude + xCenter) * 0.1f;
-        plot(indices, width, height, static_cast<int>(previous), y, ink);
+        plot(pixels, width, height, static_cast<int>(previous), y, ink);
     }
 }
 
 // RenderWave waveform 4: two smoothed diagonal lines at 0.9 of the line amplitude. Left
 // runs down from the top-left corner and right from width - height, both one pixel
 // across per row.
-void drawDiagonals(std::uint8_t* indices, int width, int height, const AudioFrame& audio, Ink ink) {
+void drawDiagonals(std::uint8_t* pixels, int width, int height, const AudioFrame& audio, Ink ink) {
     const float amplitude = static_cast<float>(height) * kWaveFraction * 0.9f;
     const std::vector<float>& left = audio.left.empty() ? audio.samples : audio.left;
     const std::vector<float>& right = audio.right.empty() ? left : audio.right;
@@ -272,8 +278,8 @@ void drawDiagonals(std::uint8_t* indices, int width, int height, const AudioFram
     for (int y = 0; y < height; ++y) {
         previousLeft = previousLeft * 0.9f + columnSample(left, y, width) * amplitude * 0.1f;
         previousRight = previousRight * 0.9f + columnSample(right, y, width) * amplitude * 0.1f;
-        plot(indices, width, height, static_cast<int>(previousLeft) + y, y, ink);
-        plot(indices, width, height, static_cast<int>(previousRight) + y + (width - height), y, ink);
+        plot(pixels, width, height, static_cast<int>(previousLeft) + y, y, ink);
+        plot(pixels, width, height, static_cast<int>(previousRight) + y + (width - height), y, ink);
     }
 }
 
@@ -282,7 +288,7 @@ void drawDiagonals(std::uint8_t* indices, int width, int height, const AudioFram
 // and points closer than 5 (at 640) to the center are skipped.
 // Intentional difference: like waveform 6, the 364 points cover the whole column wave
 // instead of the first 364 frames of the capture buffer.
-void drawCircle(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
+void drawCircle(std::uint8_t* pixels, int width, int height, const AudioFrame& audio,
                 Ink ink, float centerXNorm, float centerYNorm) {
     const float amplitude = static_cast<float>(height) * kWaveFraction * 0.7f;
     const float toPixels = static_cast<float>(width) / 640.f;
@@ -307,48 +313,50 @@ void drawCircle(std::uint8_t* indices, int width, int height, const AudioFrame& 
             continue;
         }
         const float angle = static_cast<float>(i) * 0.02f;
-        plot(indices, width, height, static_cast<int>(centerX + radius * std::cos(angle)),
+        plot(pixels, width, height, static_cast<int>(centerX + radius * std::cos(angle)),
              static_cast<int>(centerY + radius * std::sin(angle)), ink);
     }
 }
 
-void drawShape(std::uint8_t* indices, int width, int height, const AudioFrame& audio, Ink ink,
+void drawShape(std::uint8_t* pixels, int width, int height, const AudioFrame& audio, Ink ink,
                int waveform, int mode, float centerXNorm, float centerYNorm, float motionTime) {
     switch (waveform) {
         case 2:
-            drawTwoLines(indices, width, height, audio, ink, centerYNorm);
+            drawTwoLines(pixels, width, height, audio, ink, centerYNorm);
             break;
         case 3:
-            drawVerticalLine(indices, width, height, audio, ink, centerXNorm);
+            drawVerticalLine(pixels, width, height, audio, ink, centerXNorm);
             break;
         case 4:
-            drawDiagonals(indices, width, height, audio, ink);
+            drawDiagonals(pixels, width, height, audio, ink);
             break;
         case 5:
-            drawCircle(indices, width, height, audio, ink, centerXNorm, centerYNorm);
+            drawCircle(pixels, width, height, audio, ink, centerXNorm, centerYNorm);
             break;
         case 6:
-            drawScope(indices, width, height, audio, ink, centerXNorm, centerYNorm, motionTime);
+            drawScope(pixels, width, height, audio, ink, centerXNorm, centerYNorm, motionTime);
             break;
         default:
-            drawLine(indices, width, height, audio, ink, mode);
+            drawLine(pixels, width, height, audio, ink, mode);
             break;
     }
 }
 
-void drawWaveform(std::uint8_t* indices, int width, int height, const AudioFrame& audio,
-                  int waveform, int mode, float centerXNorm, float centerYNorm, float motionTime) {
-    if (indices == nullptr || audio.silent || audio.samples.empty() || width < 2 || height < 2) {
+// `frames` is the color clock in reference frames.
+void drawWaveform(std::uint8_t* pixels, int width, int height, const AudioFrame& audio, int waveform, int mode,
+                  float centerXNorm, float centerYNorm, float motionTime, double frames, const ColorDrift& drift) {
+    if (pixels == nullptr || audio.silent || audio.samples.empty() || width < 2 || height < 2) {
         return;
     }
     // Beat-mode brightness follows each hit and goes dark between them. As in the
     // original, the X-Y oscilloscope keeps its steady brightness.
     const float beatScale = audio.beatMode && waveform != 6 ? std::clamp(audio.beatBrightness, 0.f, 1.f) : 1.f;
-    const int bright = static_cast<int>(waveBrightness(audio.volume, audio.averageVolume) * beatScale);
-    if (bright < 1) {
+    const float base = waveBrightness(audio.volume, audio.averageVolume) * beatScale;
+    const Rgb color = waveColor(base, frames, drift, audio.power);
+    if (color.r < 1 && color.g < 1 && color.b < 1) {
         return;
     }
-    drawShape(indices, width, height, audio, Ink{bright, false}, waveform, mode, centerXNorm, centerYNorm, motionTime);
+    drawShape(pixels, width, height, audio, Ink{color, false}, waveform, mode, centerXNorm, centerYNorm, motionTime);
 }
 
 // The idle wave's drift phases at one moment. See `wrappedPhase`.
@@ -423,10 +431,14 @@ Look randomLook(Random& random) {
 // The effect layer draws its particles from its own generator, so the frame rate does not
 // change which looks come up.
 // The slide shift draws its offsets from its own generator for the same reason.
+// The color drift comes from a third generator, so adding it left the looks unchanged.
 Engine::Engine(std::uint32_t seed) : effectLayer_(seed ^ 0x5BD1E995u), slideShift_(seed ^ 0x27D4EB2Fu) {
     random_.state = seed == 0 ? 1u : seed;
+    Random driftRandom;
+    driftRandom.state = (seed ^ 0x68E31DA4u) == 0 ? 1u : seed ^ 0x68E31DA4u;
+    drift_ = randomColorDrift(driftRandom);
+    effectLayer_.setColorDrift(drift_);
     pickEffects();
-    pickPalette(false);
     slideShift_.startLook(SlideShift::rollAllowed(random_));
     resize(960, 540);
 }
@@ -444,21 +456,22 @@ void Engine::resize(int width, int height) {
     const std::size_t count = static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
 
     // Carry the picture into the new size, nearest-neighbor, so a live resize does not go black.
-    back_.assign(count, 0);
+    back_.assign(count * kPixelBytes, 0);
     if (oldWidth >= 2 && oldHeight >= 2 && !front_.empty()) {
         for (int y = 0; y < height_; ++y) {
             const int sy = y * oldHeight / height_;
             for (int x = 0; x < width_; ++x) {
                 const int sx = x * oldWidth / width_;
-                back_[static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)] =
-                    front_[static_cast<std::size_t>(sy) * static_cast<std::size_t>(oldWidth) + static_cast<std::size_t>(sx)];
+                std::memcpy(&back_[(static_cast<std::size_t>(y) * static_cast<std::size_t>(width_) + static_cast<std::size_t>(x)) * kPixelBytes],
+                            &front_[(static_cast<std::size_t>(sy) * static_cast<std::size_t>(oldWidth) + static_cast<std::size_t>(sx)) * kPixelBytes],
+                            kPixelBytes);
             }
         }
     }
     front_.swap(back_);
-    back_.assign(count, 0);
+    back_.assign(count * kPixelBytes, 0);
     rgba_.assign(count * 4, 0);
-    expandPalette(front_.data());
+    expandPixels(front_.data());
     effectLayer_.clearTrail();
     rebuildMap();
 }
@@ -479,29 +492,7 @@ void Engine::pickLook() {
     mapParameters_ = randomMapParameters(picked.mode, width_, height_, random_);
     waveform_ = picked.waveform;
     pickEffects();
-    pickPalette(true);
     slideShift_.startLook(SlideShift::rollAllowed(random_));
-}
-
-// FX_Random_Palette ran with each new map. Like the effects, it reads whether there was sound.
-void Engine::pickPalette(bool blend) {
-    paletteRecipe_ = randomPaletteRecipe(random_);
-    fromPalette_ = palette_;
-    targetPalette_ = buildPalette(paletteRecipe_, soundEmpty());
-    paletteBlendLeft_ = blend ? kPaletteBlendSeconds : 0;
-    if (!blend) {
-        palette_ = targetPalette_;
-    }
-}
-
-bool Engine::soundEmpty() const { return silentSeconds_ > kSoundEmptySeconds; }
-
-void Engine::setPalette(const PaletteRecipe& recipe) {
-    paletteRecipe_ = clampedPaletteRecipe(recipe);
-    targetPalette_ = buildPalette(paletteRecipe_, soundEmpty());
-    palette_ = targetPalette_;
-    paletteBlendLeft_ = 0;
-    expandPalette(front_.data());
 }
 
 void Engine::pickEffects() {
@@ -532,22 +523,39 @@ void Engine::rebuildMap() {
     buildMap(map_, width_, height_, mapParameters_, bands_);
 }
 
-void Engine::expandPalette(const std::uint8_t* indices) {
-    const std::size_t count = static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
-    // From the palette as drawn, so the levels follow a blend. The palette only changes while
-    // it blends or on a new pick, so the table is rebuilt then and reused otherwise.
-    if (!lookupBuilt_ || palette_ != levelsPalette_) {
-        levelsPalette_ = palette_;
-        lookupBuilt_ = true;
-        const HighlightLevels levels = highlightLevels(palette_);
-        for (std::size_t n = 0; n < rgbaLookup_.size(); ++n) {
-            rgbaLookup_[n] = {palette_[n * 3], palette_[n * 3 + 1], palette_[n * 3 + 2], levels[n]};
-        }
+namespace {
+
+// The original's truecolor blit doubled each channel with saturation (REMAP, PADDUSB).
+constexpr std::array<std::uint8_t, 256> kDisplayLevels = [] {
+    std::array<std::uint8_t, 256> levels{};
+    for (std::size_t c = 0; c < levels.size(); ++c) {
+        levels[c] = static_cast<std::uint8_t>(std::min<std::size_t>(c * 2, 255));
     }
-    // One four-byte copy per pixel, which compiles to a single store.
+    return levels;
+}();
+
+constexpr std::array<std::uint8_t, 256> kHighlightLevels = [] {
+    std::array<std::uint8_t, 256> levels{};
+    for (int c = 0; c < 256; ++c) {
+        const int level = (c - kHighlightStart) * 255 / (kHighlightFull - kHighlightStart);
+        levels[static_cast<std::size_t>(c)] = static_cast<std::uint8_t>(std::clamp(level, 0, 255));
+    }
+    return levels;
+}();
+
+}  // namespace
+
+std::array<std::uint8_t, 4> displayPixel(const std::uint8_t* pixel) {
+    const std::uint8_t brightest = std::max({pixel[0], pixel[1], pixel[2]});
+    return {kDisplayLevels[pixel[0]], kDisplayLevels[pixel[1]], kDisplayLevels[pixel[2]], kHighlightLevels[brightest]};
+}
+
+void Engine::expandPixels(const std::uint8_t* pixels) {
+    const std::size_t count = static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
     std::uint8_t* out = rgba_.data();
     for (std::size_t i = 0; i < count; ++i) {
-        std::memcpy(out + i * 4, rgbaLookup_[indices[i]].data(), 4);
+        const std::array<std::uint8_t, 4> rgba = displayPixel(pixels + i * kPixelBytes);
+        std::memcpy(out + i * 4, rgba.data(), 4);
     }
     frameChanged_ = true;
 }
@@ -558,7 +566,7 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     view.width = width_;
     view.height = height_;
     if (width_ < 2 || height_ < 2 || paused_) {
-        // A resize or a new palette while paused still changes the pixels once.
+        // A resize while paused still changes the pixels once.
         view.changed = frameChanged_;
         frameChanged_ = false;
         return view;
@@ -571,7 +579,6 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     }
 
     soundActive_ = !audio.silent && !audio.samples.empty();
-    silentSeconds_ = soundActive_ ? 0 : silentSeconds_ + dt;
     // Sound whose line would draw dimmer than the idle wave counts as quiet for it. The beat
     // scale is left out, so the dark gaps between hits in beat mode do not bring it up.
     const bool faint = !soundActive_ || waveBrightness(audio.volume, audio.averageVolume) < kIdleHandOff;
@@ -583,13 +590,6 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
             mapElapsed_ = 0;
             rebuildMap();
         }
-    }
-
-    // The blend finishes even while locked, since lock only stops new picks.
-    if (paletteBlendLeft_ > 0) {
-        paletteBlendLeft_ = std::max(paletteBlendLeft_ - dt, 0.0);
-        palette_ = blendPalettes(fromPalette_, targetPalette_,
-                                 static_cast<float>(1.0 - paletteBlendLeft_ / kPaletteBlendSeconds));
     }
 
     motionTime_ += dt;
@@ -606,15 +606,15 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
                       mapParameters_.centerXNorm * static_cast<float>(width_),
                       mapParameters_.centerYNorm * static_cast<float>(height_), dt * kReferenceFps, audio);
     // The original added slider1 to the source pointer once per frame, whatever the map's damping.
-    warpIndices(front_.data(), back_.data(), width_, height_, map_.data(), step, decay,
+    warpPixels(front_.data(), back_.data(), width_, height_, map_.data(), step, decay,
                 slideShift_.x() * frameStep, slideShift_.y() * frameStep, ++ditherSeed_, bands_);
     if (!effects_.hideWaveform) {
         drawWaveform(back_.data(), width_, height_, audio, waveform_, mapParameters_.mode, mapParameters_.centerXNorm,
-                     mapParameters_.centerYNorm, static_cast<float>(motionTime_));
+                     mapParameters_.centerYNorm, static_cast<float>(motionTime_), motionTime_ * kReferenceFps, drift_);
     }
     updateIdle(dt);
     drawIdleWave();
-    expandPalette(back_.data());
+    expandPixels(back_.data());
     front_.swap(back_);
     frameChanged_ = false;
     return view;
@@ -644,9 +644,10 @@ void Engine::drawIdleWave() {
         return;
     }
     const auto level = static_cast<float>(idleLevel_);
-    const int bright = static_cast<int>(
-        level * (kIdleBright + kIdleBreath * static_cast<float>(std::sin(motionTime_ * kTau / kIdleBreathSeconds))));
-    if (bright < 1) {
+    const float base =
+        level * (kIdleBright + kIdleBreath * static_cast<float>(std::sin(motionTime_ * kTau / kIdleBreathSeconds)));
+    const Rgb color = driftColor(base, motionTime_ * kReferenceFps, drift_);
+    if (color.r < 1 && color.g < 1 && color.b < 1) {
         return;
     }
     const float amplitude =
@@ -666,7 +667,7 @@ void Engine::drawIdleWave() {
     }
     const int waveform = effects_.hideWaveform ? 5 : waveform_;
     // Soft spots: the idle wave is slow and faint, and sharp dots looked out of place on it.
-    drawShape(back_.data(), width_, height_, idleFrame_, Ink{bright, true}, waveform, mapParameters_.mode,
+    drawShape(back_.data(), width_, height_, idleFrame_, Ink{color, true}, waveform, mapParameters_.mode,
               mapParameters_.centerXNorm, mapParameters_.centerYNorm, static_cast<float>(motionTime_));
 }
 

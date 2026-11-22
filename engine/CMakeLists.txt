@@ -12,7 +12,6 @@ add_library(geiss_engine STATIC
     src/color.cpp
     src/effects.cpp
     src/map.cpp
-    src/palette.cpp
     src/shift.cpp
     src/engine.cpp
 )

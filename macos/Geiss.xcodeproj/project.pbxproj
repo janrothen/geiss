@@ -18,7 +18,7 @@
 		A10000000000000000000019 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A10000000000000000000062 /* beat.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = beat.cpp; sourceTree = "<group>"; };
 		A10000000000000000000068 /* shift.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = shift.cpp; sourceTree = "<group>"; };
-		A10000000000000000000066 /* palette.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = palette.cpp; sourceTree = "<group>"; };
+		A10000000000000000000066 /* color.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = color.cpp; sourceTree = "<group>"; };
 		A10000000000000000000064 /* effects.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = effects.cpp; sourceTree = "<group>"; };
 		A1000000000000000000001A /* audio.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = audio.cpp; sourceTree = "<group>"; };
 		A1000000000000000000001B /* map.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = map.cpp; sourceTree = "<group>"; };
@@ -72,7 +72,7 @@
 				A1000000000000000000001A /* audio.cpp */,
 				A10000000000000000000062 /* beat.cpp */,
 				A10000000000000000000064 /* effects.cpp */,
-				A10000000000000000000066 /* palette.cpp */,
+				A10000000000000000000066 /* color.cpp */,
 				A10000000000000000000068 /* shift.cpp */,
 				A1000000000000000000001B /* map.cpp */,
 				A1000000000000000000001C /* engine.cpp */,
@@ -150,7 +150,7 @@
 				A10000000000000000000046 /* audio.cpp in Sources */,
 				A10000000000000000000063 /* beat.cpp in Sources */,
 				A10000000000000000000065 /* effects.cpp in Sources */,
-				A10000000000000000000067 /* palette.cpp in Sources */,
+				A10000000000000000000067 /* color.cpp in Sources */,
 				A10000000000000000000069 /* shift.cpp in Sources */,
 				A10000000000000000000047 /* map.cpp in Sources */,
 				A10000000000000000000048 /* engine.cpp in Sources */,
@@ -167,7 +167,7 @@
 		A10000000000000000000045 /* EngineBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000016 /* EngineBridge.mm */; };
 		A10000000000000000000063 /* beat.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000062 /* beat.cpp */; };
 		A10000000000000000000065 /* effects.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000064 /* effects.cpp */; };
-		A10000000000000000000067 /* palette.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000066 /* palette.cpp */; };
+		A10000000000000000000067 /* color.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000066 /* color.cpp */; };
 		A10000000000000000000069 /* shift.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000068 /* shift.cpp */; };
 		A10000000000000000000046 /* audio.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001A /* audio.cpp */; };
 		A10000000000000000000047 /* map.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001B /* map.cpp */; };

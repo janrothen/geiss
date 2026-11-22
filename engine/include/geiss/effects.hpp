@@ -35,6 +35,7 @@
 #pragma once
 
 #include "geiss/audio.hpp"
+#include "geiss/color.hpp"
 #include "geiss/map.hpp"
 
 #include <array>
@@ -58,7 +59,7 @@ constexpr bool modeHasEdges(int mode) { return mode == 6; }
 // One map mode's effect setup, from CModeInfo. Weights are out of 1000.
 struct ModeEffects {
     std::array<int, kEffectCount> weights{};
-    // Solar particle strength, from the original's 8-bit table.
+    // Solar particle strength, from the original's truecolor table.
     int solarMax = 60;
     // Per-frame darkening of the map center at 30 fps. 1 leaves it alone.
     float centerDwindle = 1.f;
@@ -90,7 +91,8 @@ ModeEffects modeEffects(int mode);
 // minimum count is only enforced while there is no sound.
 EffectSet randomEffects(int mode, bool soundActive, Random& random);
 
-// Draws the effects into the index buffer before the warp, as the original drew into VS1.
+// Draws the effects into the pixel buffer (kPixelBytes per pixel) before the warp, as the
+// original drew into VS1, in its truecolor forms.
 // Time is counted in reference frames at 30 fps, so speeds do not depend on the frame rate.
 class EffectLayer {
 public:
@@ -103,15 +105,18 @@ public:
     // Forgets the dot trail. Its positions are pixels, so a resize makes them stale.
     void clearTrail();
 
+    // The drift that tints the nuclide's rings.
+    void setColorDrift(const ColorDrift& drift) { drift_ = drift; }
+
     // `frames` is the elapsed time in reference frames (dt * 30). `centerX` and `centerY`
     // are the map center in pixels, and `mode` is the map mode. While `audio` has no sound,
     // only the map's center darkening and the nuclide's random rings draw.
-    void draw(std::uint8_t* indices, int width, int height, const EffectSet& effects, int mode,
+    void draw(std::uint8_t* pixels, int width, int height, const EffectSet& effects, int mode,
               float centerX, float centerY, double frames, const AudioFrame& audio);
 
 private:
     struct Canvas {
-        std::uint8_t* indices;
+        std::uint8_t* pixels;
         int width;
         int height;
         float centerX;
@@ -122,14 +127,15 @@ private:
     void shadeBobs(const Canvas& canvas, double frames);
     void chasers(const Canvas& canvas, int count, double previousClock);
     void bar(const Canvas& canvas, double frames);
+    void barLine(const Canvas& canvas, double floatframe, int channel, int amount);
     void dots(const Canvas& canvas, int steps);
     void solar(const Canvas& canvas, int solarMax, double frames);
     void dropSolarParticles(const Canvas& canvas, int count);
     void grid(const Canvas& canvas, int direction);
     void nuclide(const Canvas& canvas, int steps, const AudioFrame& audio);
     void silentNuclide(const Canvas& canvas, int steps);
-    void nuclideRing(const Canvas& canvas, float discRadius);
-    void disc(const Canvas& canvas, int cx, int cy, float radius, float strength);
+    void nuclideRing(const Canvas& canvas, float discRadius, Tint tint);
+    void disc(const Canvas& canvas, int cx, int cy, float radius, float strength, Tint tint);
     void spectral(const Canvas& canvas, int steps, double frames, const AudioFrame& audio);
     void advanceSpectral(const AudioFrame& audio);
     void drawSpectral(const Canvas& canvas, float strength);
@@ -147,12 +153,13 @@ private:
     // ShadeBobs' micro_f1...f4 and micro_rad, picked once per run.
     std::array<float, 4> bobFrequency_{};
     std::array<float, 4> bobRadius_{};
+    std::array<float, 3> bobColorRate_{};
     double bobSteps_ = 0;
     double solarParticles_ = 0;
     float barCarry_ = 0;
     std::array<int, kTrail> trailX_{};
     std::array<int, kTrail> trailY_{};
-    std::array<std::uint8_t, kTrail> trailValue_{};
+    std::array<Rgb, kTrail> trailColor_{};
     int trailNewest_ = 0;
     int trailFilled_ = 0;
     bool burstPending_ = false;
@@ -161,6 +168,8 @@ private:
     // The spectral dots' last smoothed band levels and their path phases (g_phase_inc).
     std::array<float, kSpectrumBands> spectralLast_{};
     std::array<float, kSpectrumBands> spectralPhase_{};
+    std::array<Tint, kSpectrumBands> spectralColor_{};
+    ColorDrift drift_{};
 };
 
 }  // namespace geiss

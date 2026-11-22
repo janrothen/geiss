@@ -37,7 +37,6 @@
 #include "geiss/color.hpp"
 #include "geiss/engine.hpp"
 #include "geiss/map.hpp"
-#include "geiss/palette.hpp"
 #include "geiss/shift.hpp"
 
 #include <algorithm>
@@ -70,6 +69,71 @@ void checkNear(float actual, float expected, float tolerance, const char* messag
     }
 }
 
+// A simulation pixel buffer for the tests: geiss::kPixelBytes per pixel. Indexing gives a
+// pixel's brightest channel, which is its level for the effects that draw grey.
+class Pixels {
+public:
+    Pixels() = default;
+    Pixels(std::size_t count, std::uint8_t fill) : bytes_(count * geiss::kPixelBytes, 0) {
+        for (std::size_t i = 0; i < count; ++i) {
+            set(i, {fill, fill, fill});
+        }
+    }
+
+    std::uint8_t* data() { return bytes_.data(); }
+    const std::uint8_t* data() const { return bytes_.data(); }
+    std::size_t size() const { return bytes_.size() / geiss::kPixelBytes; }
+    std::uint8_t operator[](std::size_t i) const {
+        const std::uint8_t* p = &bytes_[i * geiss::kPixelBytes];
+        return std::max({p[0], p[1], p[2]});
+    }
+    geiss::Rgb rgb(std::size_t i) const {
+        const std::uint8_t* p = &bytes_[i * geiss::kPixelBytes];
+        return {p[0], p[1], p[2]};
+    }
+    void set(std::size_t i, geiss::Rgb color) {
+        std::uint8_t* p = &bytes_[i * geiss::kPixelBytes];
+        p[0] = static_cast<std::uint8_t>(color.r);
+        p[1] = static_cast<std::uint8_t>(color.g);
+        p[2] = static_cast<std::uint8_t>(color.b);
+    }
+    std::vector<std::uint8_t> levels() const {
+        std::vector<std::uint8_t> out(size());
+        for (std::size_t i = 0; i < out.size(); ++i) {
+            out[i] = (*this)[i];
+        }
+        return out;
+    }
+    void clear() { std::fill(bytes_.begin(), bytes_.end(), 0); }
+    friend bool operator==(const Pixels&, const Pixels&) = default;
+
+private:
+    std::vector<std::uint8_t> bytes_;
+};
+
+std::uint8_t maxLevel(const Pixels& pixels) {
+    const std::vector<std::uint8_t> levels = pixels.levels();
+    return *std::max_element(levels.begin(), levels.end());
+}
+
+template <typename Predicate>
+bool allLevels(const Pixels& pixels, Predicate predicate) {
+    const std::vector<std::uint8_t> levels = pixels.levels();
+    return std::all_of(levels.begin(), levels.end(), predicate);
+}
+
+std::vector<float> toneSamples(double hz, float amplitude, double rate, int frames) {
+    std::vector<float> tone(static_cast<std::size_t>(frames));
+    for (int i = 0; i < frames; ++i) {
+        tone[static_cast<std::size_t>(i)] = amplitude * static_cast<float>(std::sin(2.0 * std::numbers::pi * hz * i / rate));
+    }
+    return tone;
+}
+
+std::size_t strongestBand(const std::array<float, geiss::kFourierDetail>& power) {
+    return static_cast<std::size_t>(std::max_element(power.begin(), power.end()) - power.begin());
+}
+
 void testMode25PullsTowardCenter() {
     geiss::MapParameters map;
     map.centerXNorm = 0.5f;
@@ -93,13 +157,17 @@ void testMode25PullsTowardCenter() {
 void testWarpDecayAndSample() {
     constexpr int width = 4;
     constexpr int height = 2;
-    std::uint8_t src[8] = {10, 20, 0, 0, 30, 40, 0, 0};
-    std::uint8_t dst[8] = {};
+    Pixels src(8, 0);
+    Pixels dst(8, 0);
+    const std::array<int, 8> levels = {10, 20, 0, 0, 30, 40, 0, 0};
+    for (std::size_t i = 0; i < levels.size(); ++i) {
+        src.set(i, {levels.at(i), levels.at(i), levels.at(i)});
+    }
     std::vector<geiss::SourcePoint> map(8);
     for (int i = 0; i < 8; ++i) {
         map[static_cast<std::size_t>(i)] = {0.f, 0.f};
     }
-    geiss::warpIndices(src, dst, width, height, map.data(), 1.f, 0.5f);
+    geiss::warpPixels(src.data(), dst.data(), width, height, map.data(), 1.f, 0.5f);
     check(dst[0] == 5, "identity sample at 0,0 decays by half");
     check(dst[1] == 5, "a target of 0,0 copies the decayed corner");
 
@@ -108,9 +176,19 @@ void testWarpDecayAndSample() {
             map[static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)] = {static_cast<float>(x), static_cast<float>(y)};
         }
     }
-    src[0] = 100;
-    geiss::warpIndices(src, dst, width, height, map.data(), 0.f, 0.5f);
-    check(dst[0] == 50, "step 0 samples the pixel itself");
+    src.set(0, {100, 60, 20});
+    geiss::warpPixels(src.data(), dst.data(), width, height, map.data(), 0.f, 0.5f);
+    check(dst.rgb(0) == geiss::Rgb{50, 30, 10}, "step 0 samples the pixel itself, each channel alike");
+    check(dst.data()[3] == 0, "the unused byte stays 0");
+
+    // Half a pixel to the right averages two pixels channel by channel.
+    src.set(0, {100, 0, 200});
+    src.set(1, {0, 100, 0});
+    for (auto& point : map) {
+        point.x += 0.5f;
+    }
+    geiss::warpPixels(src.data(), dst.data(), width, height, map.data(), 1.f, 1.f);
+    check(dst.rgb(0) == geiss::Rgb{50, 50, 100}, "the bilinear weights apply to each channel");
 }
 
 void testAnalysis() {
@@ -302,16 +380,16 @@ void testBandsMatchSerial() {
         }
         check(sameMap, "a banded map matches the serial map");
 
-        std::vector<std::uint8_t> src(static_cast<std::size_t>(width) * height);
+        Pixels src(static_cast<std::size_t>(width) * height, 0);
         for (std::size_t i = 0; i < src.size(); ++i) {
-            src[i] = static_cast<std::uint8_t>(i * 37u + 11u);
+            src.set(i, {static_cast<int>((i * 37u + 11u) % 256u), static_cast<int>((i * 53u) % 256u), static_cast<int>((i * 17u + 5u) % 256u)});
         }
-        std::vector<std::uint8_t> serialOut(src.size());
-        std::vector<std::uint8_t> bandedOut(src.size());
-        geiss::warpIndices(src.data(), serialOut.data(), width, height, serial.data(), 0.5f, 0.97f, 1.5f, -0.5f, 9u);
-        geiss::warpIndices(src.data(), bandedOut.data(), width, height, serial.data(), 0.5f, 0.97f, 1.5f, -0.5f, 9u,
-                           bands.runner());
-        check(bands.eachOnce(), "warpIndices runs each band once");
+        Pixels serialOut(src.size(), 0);
+        Pixels bandedOut(src.size(), 0);
+        geiss::warpPixels(src.data(), serialOut.data(), width, height, serial.data(), 0.5f, 0.97f, 1.5f, -0.5f, 9u);
+        geiss::warpPixels(src.data(), bandedOut.data(), width, height, serial.data(), 0.5f, 0.97f, 1.5f, -0.5f, 9u,
+                          bands.runner());
+        check(bands.eachOnce(), "warpPixels runs each band once");
         check(serialOut == bandedOut, "a banded warp matches the serial warp");
     }
 
@@ -354,8 +432,6 @@ void testFrameChanged() {
     engine.resize(40, 30);
     check(engine.tick(1.0 / 60.0, audio).changed, "a resize while paused changes the frame once");
     check(!engine.tick(1.0 / 60.0, audio).changed, "and only once");
-    engine.setPalette(engine.palette());
-    check(engine.tick(1.0 / 60.0, audio).changed, "a new palette while paused changes the frame");
     engine.setPaused(false);
     check(engine.tick(1.0 / 60.0, audio).changed, "resuming changes the frame again");
 }
@@ -571,217 +647,6 @@ void testWaveBrightnessFollowsVolume() {
     check(colorSum(silentEngine.tick(1.0 / 30.0, silent)) == 0, "no volume draws no line");
 }
 
-// Red, green, and blue of palette entry `n`.
-std::array<int, 3> entry(const geiss::Palette& palette, int n) {
-    const auto i = static_cast<std::size_t>(n) * 3;
-    return {palette[i], palette[i + 1], palette[i + 2]};
-}
-
-void testPaletteCurves() {
-    checkNear(geiss::paletteCurve(1, 100), 226.f, 0.01f, "curve 1 is sqrt(x) * 22.6");
-    checkNear(geiss::paletteCurve(2, 50), 100.f, 0.01f, "curve 2 is x * 2");
-    checkNear(geiss::paletteCurve(3, 64), 64.f, 0.01f, "curve 3 is x * x / 64");
-    checkNear(geiss::paletteCurve(4, 256), 255.f, 0.01f, "curve 4 is a quarter sine up to 255");
-    checkNear(geiss::paletteCurve(5, 20), 70.f, 0.01f, "curve 5 is x * 3.5");
-    checkNear(geiss::paletteCurve(6, 0), 0.f, 0.01f, "curve 6 starts black");
-    check(geiss::paletteCurve(6, 255) < 180.f, "curve 6 stays dark");
-    checkNear(geiss::paletteCurve(7, 0), 32.f, 0.01f, "curve 7 starts at a dim glow");
-}
-
-void testBuildPalette() {
-    geiss::PaletteRecipe monotone;
-    monotone.monotone = true;
-    monotone.monotoneOrder = 0;
-    monotone.lowBand = 7;
-    monotone.highBand = 17;
-    const geiss::Palette fx = geiss::buildPalette(monotone, true);
-    check(entry(fx, 0) == std::array<int, 3>{0, 0, 0}, "a monotone palette starts black");
-    // Order 0: red a*a/64, blue a*2, green sqrt(a)*22.6, truncated.
-    check(entry(fx, 127) == std::array<int, 3>{252, 254, 254}, "monotone order 0 at 127");
-    check(entry(fx, 200) == entry(fx, 127), "a monotone palette holds its 127 value above");
-    check(entry(fx, 10)[0] == 1, "the monotone route has no gamma and no coarse band");
-
-    geiss::PaletteRecipe curves;
-    curves.curves = {2, 3, 1};
-    const geiss::Palette loud = geiss::buildPalette(curves, false);
-    // Red is the first curve, blue the second, and green the third, each times 1.1.
-    check(entry(loud, 50) == std::array<int, 3>{110, 175, 42}, "curves drive red, blue, and green in the original's order");
-    check(entry(loud, 255)[0] == 255, "curves clamp at 255");
-    const geiss::Palette quiet = geiss::buildPalette(curves, true);
-    check(entry(quiet, 50)[0] == 140, "a palette built in silence uses 0.3 more gamma");
-
-    curves.lowBand = 7;
-    curves.highBand = 17;
-    const geiss::Palette coarse = geiss::buildPalette(curves, false);
-    check(entry(coarse, 10)[0] == 44, "the coarse band doubles its indices");
-    check(entry(coarse, 7)[0] == 15 && entry(coarse, 17)[0] == 37, "the band edges stay normal");
-
-    geiss::PaletteRecipe solar;
-    solar.curves = {7, 6, 6};
-    check(entry(geiss::buildPalette(solar, false), 0)[0] == 35, "a solar curve tints index 0, as in the original");
-}
-
-void testBlendPalettes() {
-    geiss::Palette black{};
-    geiss::Palette white{};
-    white.fill(255);
-    check(geiss::blendPalettes(black, white, 0.f) == black, "a blend starts at the old palette");
-    check(geiss::blendPalettes(black, white, 1.f) == white, "a blend ends at the new palette");
-    check(entry(geiss::blendPalettes(black, white, 0.5f), 9)[1] == 128, "a blend is linear");
-}
-
-void testRandomPaletteRecipes() {
-    constexpr int draws = 60000;
-    geiss::Random random{21};
-    int monotone = 0;
-    int coarse = 0;
-    bool bandsInRange = true;
-    bool curvesInRange = true;
-    bool atMostOneDark = true;
-    std::array<int, 8> curveCounts{};
-    std::array<int, 4> orders{};
-    for (int i = 0; i < draws; ++i) {
-        const geiss::PaletteRecipe recipe = geiss::randomPaletteRecipe(random);
-        if (recipe.lowBand >= 0) {
-            ++coarse;
-            bandsInRange = bandsInRange && recipe.lowBand >= 7 && recipe.lowBand <= 12 && recipe.highBand >= 17 &&
-                           recipe.highBand <= 22;
-        }
-        if (recipe.monotone) {
-            ++monotone;
-            ++orders.at(static_cast<std::size_t>(recipe.monotoneOrder));
-            continue;
-        }
-        int dark = 0;
-        for (const int curve : recipe.curves) {
-            curvesInRange = curvesInRange && curve >= 1 && curve <= 7;
-            dark += curve == 6 ? 1 : 0;
-            ++curveCounts.at(static_cast<std::size_t>(std::clamp(curve, 0, 7)));
-        }
-        atMostOneDark = atMostOneDark && dark <= 1;
-    }
-    check(monotone > draws / 7 && monotone < draws / 5, "about 1 in 6 palettes is monotone");
-    check(coarse > draws / 12 && coarse < draws / 8, "about 1 in 10 palettes has a coarse band");
-    check(bandsInRange, "the coarse band runs from 7...12 to 17...22");
-    check(curvesInRange, "curves are 1...7");
-    check(atMostOneDark, "at most one channel uses the dark curve");
-    check(curveCounts[7] > 0 && curveCounts[7] < curveCounts[1] / 3, "the solar curve comes up rarely");
-    check(orders[0] > 0 && orders[1] > 0 && orders[2] > 0 && orders[3] > 0, "every monotone order comes up");
-}
-
-void testEnginePalettes() {
-    // Over 30 s the 20-second timer changes the unlocked engine's palette, but not the locked one's.
-    geiss::Engine locked(4);
-    geiss::Engine unlocked(4);
-    locked.resize(64, 48);
-    unlocked.resize(64, 48);
-    locked.setLocked(true);
-    const geiss::PaletteRecipe held = locked.palette();
-    check(unlocked.palette() == held, "the same seed picks the same first palette");
-    for (int i = 0; i < 300; ++i) {
-        locked.tick(0.1, beatFrame(false, 1.f, 0.f));
-        unlocked.tick(0.1, beatFrame(false, 1.f, 0.f));
-    }
-    check(!(unlocked.palette() == held), "the timer changes an unlocked palette");
-    check(locked.palette() == held, "lock holds the palette");
-
-    geiss::Engine next(4);
-    next.resize(64, 48);
-    const geiss::PaletteRecipe first = next.palette();
-    bool changed = false;
-    for (int i = 0; i < 10 && !changed; ++i) {
-        next.nextVisual();
-        changed = !(next.palette() == first);
-    }
-    check(changed, "Next picks a new palette");
-
-    // A full-brightness line draws at the top of a plain x * 2 palette: 255 * 2 * 1.1, clamped.
-    geiss::Engine top(1);
-    top.resize(32, 24);
-    top.setEffects({});
-    geiss::PaletteRecipe plain;
-    plain.curves = {2, 2, 2};
-    top.setPalette(plain);
-    const geiss::FrameView frame = top.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
-    int brightest = 0;
-    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
-    for (std::size_t i = 0; i < pixels; ++i) {
-        brightest = std::max(brightest, static_cast<int>(frame.rgba[i * 4]));
-    }
-    check(brightest == 255, "a full-brightness line draws at the palette's top");
-    check(top.palette() == plain, "setPalette replaces the palette");
-
-    geiss::PaletteRecipe wild;
-    wild.curves = {0, 9, 2};
-    wild.monotoneOrder = 7;
-    top.setPalette(wild);
-    check(top.palette().curves == std::array<int, 3>{1, 7, 2}, "setPalette clamps curves to 1...7");
-    check(top.palette().monotoneOrder == 3, "setPalette clamps the monotone order to 0...3");
-    check(entry(geiss::buildPalette(wild, false), 0)[0] == 0, "an out-of-range curve does not turn white");
-}
-
-void testEnginePaletteBlend() {
-    const geiss::AudioFrame loud = beatFrame(false, 1.f, 0.f);
-    geiss::Engine engine(6);
-    engine.resize(32, 24);
-    engine.setEffects({});
-    const geiss::Palette old = engine.paletteColors();
-    engine.nextVisual();
-    const geiss::Palette target = geiss::buildPalette(engine.palette(), false);
-    check(engine.paletteColors() == old, "a new palette does not jump in");
-
-    engine.tick(0.1, loud);
-    const geiss::Palette third = engine.paletteColors();
-    const geiss::Palette expected = geiss::blendPalettes(old, target, 1.f / 3.f);
-    bool nearThird = !(third == target);
-    for (std::size_t i = 0; i < third.size(); ++i) {
-        nearThird = nearThird && std::abs(static_cast<int>(third[i]) - static_cast<int>(expected[i])) <= 1;
-    }
-    check(nearThird, "after 0.1 s the blend is a third of the way");
-
-    engine.setPaused(true);
-    engine.tick(0.1, loud);
-    check(engine.paletteColors() == third, "pause holds the blend");
-
-    engine.setPaused(false);
-    engine.setLocked(true);
-    engine.tick(0.1, loud);
-    engine.tick(0.1, loud);
-    check(engine.paletteColors() == target, "the blend ends at the new palette after 0.3 s, even while locked");
-    engine.tick(0.1, loud);
-    check(engine.paletteColors() == target, "the blend stays at the new palette");
-}
-
-void testPaletteSilentGamma() {
-    geiss::PaletteRecipe plain;
-    plain.curves = {2, 2, 2};
-    const geiss::Palette normal = geiss::buildPalette(plain, false);
-    const geiss::Palette boosted = geiss::buildPalette(plain, true);
-
-    geiss::Engine fresh(2);
-    fresh.resize(32, 24);
-    fresh.setPalette(plain);
-    check(fresh.paletteColors() == normal, "the first palette after launch has the normal gamma");
-
-    geiss::AudioFrame quiet = beatFrame(false, 1.f, 0.f);
-    quiet.silent = true;
-    geiss::Engine engine(2);
-    engine.resize(32, 24);
-    for (int i = 0; i < 300; ++i) {
-        engine.tick(0.1, quiet);
-    }
-    engine.setPalette(plain);
-    check(engine.paletteColors() == normal, "30 s of silence is not yet SoundEmpty");
-    for (int i = 0; i < 80; ++i) {
-        engine.tick(0.1, quiet);
-    }
-    engine.setPalette(plain);
-    check(engine.paletteColors() == boosted, "after about 37 s of silence a palette gets the silent gamma");
-    engine.tick(0.1, beatFrame(false, 1.f, 0.f));
-    engine.setPalette(plain);
-    check(engine.paletteColors() == normal, "sound ends SoundEmpty at once");
-}
-
 geiss::AudioFrame bassFrame(bool beatMode, float bass, float average) {
     geiss::AudioFrame audio;
     audio.beatMode = beatMode;
@@ -921,12 +786,12 @@ void testWarpShift() {
             identity.push_back({static_cast<float>(x), static_cast<float>(y)});
         }
     }
-    std::vector<std::uint8_t> src(std::size_t{width} * height, 0);
-    std::vector<std::uint8_t> dst(src.size(), 0);
-    src[std::size_t{5} * width + 5] = 200;
-    geiss::warpIndices(src.data(), dst.data(), width, height, identity.data(), 1.f, 1.f, 1.f, 0.f);
+    Pixels src(std::size_t{width} * height, 0);
+    Pixels dst(src.size(), 0);
+    src.set(std::size_t{5} * width + 5, {200, 200, 200});
+    geiss::warpPixels(src.data(), dst.data(), width, height, identity.data(), 1.f, 1.f, 1.f, 0.f);
     check(dst[std::size_t{5} * width + 4] == 200, "a positive sideways shift slides the picture left");
-    geiss::warpIndices(src.data(), dst.data(), width, height, identity.data(), 1.f, 1.f, 0.f, -1.f);
+    geiss::warpPixels(src.data(), dst.data(), width, height, identity.data(), 1.f, 1.f, 0.f, -1.f);
     check(dst[std::size_t{6} * width + 5] == 200, "a negative vertical shift slides the picture down");
 }
 
@@ -964,16 +829,16 @@ float fadeAfterOneSecond(int fps) {
             identity.push_back({static_cast<float>(x), static_cast<float>(y)});
         }
     }
-    std::vector<std::uint8_t> a(std::size_t{width} * height, 100);
-    std::vector<std::uint8_t> b(a.size(), 0);
+    Pixels a(std::size_t{width} * height, 100);
+    Pixels b(a.size(), 0);
     const auto decay = static_cast<float>(std::pow(255.0 / 256.0, 30.0 / fps));
     for (int i = 0; i < fps; ++i) {
-        geiss::warpIndices(a.data(), b.data(), width, height, identity.data(), 1.f, decay, 0.f, 0.f,
-                           static_cast<std::uint32_t>(i + 1));
-        a.swap(b);
+        geiss::warpPixels(a.data(), b.data(), width, height, identity.data(), 1.f, decay, 0.f, 0.f,
+                          static_cast<std::uint32_t>(i + 1));
+        std::swap(a, b);
     }
     double sum = 0;
-    for (const std::uint8_t value : a) {
+    for (const std::uint8_t value : a.levels()) {
         sum += value;
     }
     return static_cast<float>(sum / static_cast<double>(a.size()));
@@ -997,84 +862,71 @@ void testFadeMatchesAtAnyFrameRate() {
     check(geiss::ditherThreshold(3, 4, 1) != geiss::ditherThreshold(3, 4, 2), "the rounding pattern changes with the seed");
 }
 
-// Whether every pixel's color and alpha come from one entry of the drawn palette and its level.
-bool alphaMatchesPalette(const geiss::Engine& engine, const geiss::FrameView& frame, int& brightest) {
-    const geiss::Palette& palette = engine.paletteColors();
-    const geiss::HighlightLevels levels = geiss::highlightLevels(palette);
-    std::set<std::array<int, 4>> entries;
-    for (std::size_t n = 0; n < levels.size(); ++n) {
-        entries.insert({palette[n * 3], palette[n * 3 + 1], palette[n * 3 + 2], levels[n]});
-    }
-    brightest = 0;
-    bool matches = true;
+void testDisplayPixel() {
+    const std::array<std::uint8_t, 4> dark{0, 0, 0, 0};
+    check(geiss::displayPixel(dark.data()) == dark, "black shows black");
+    const std::array<std::uint8_t, 4> dim{10, 64, 100, 0};
+    const auto shown = geiss::displayPixel(dim.data());
+    check(shown[0] == 20 && shown[1] == 128 && shown[2] == 200, "the display doubles each channel, as the original's blit did");
+    check(shown[3] == 0, "a pixel below 128 is no highlight");
+    const std::array<std::uint8_t, 4> hot{30, 168, 250, 0};
+    const auto glowing = geiss::displayPixel(hot.data());
+    check(glowing[0] == 60 && glowing[1] == 255 && glowing[2] == 255, "doubling saturates at 255");
+    check(glowing[3] == 255, "a channel at 208 or more is a full highlight");
+    const std::array<std::uint8_t, 4> warm{168, 20, 0, 0};
+    check(geiss::displayPixel(warm.data())[3] == 127, "the highlight rises with the brightest channel from 128 to 208");
+}
+
+// Ticks one frame of a waveform-1 line over a black, effect-free picture.
+geiss::FrameView lineFrame(geiss::Engine& engine, const geiss::AudioFrame& audio) {
+    engine.resize(64, 48);
+    engine.setEffects({});
+    engine.setSlideShiftAllowed(false);
+    engine.setIdleWave(false);
+    return engine.tick(1.0 / 30.0, audio);
+}
+
+std::array<long, 3> channelSums(const geiss::FrameView& frame) {
+    std::array<long, 3> sums{};
     const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
     for (std::size_t i = 0; i < pixels; ++i) {
-        const std::uint8_t* pixel = frame.rgba + i * 4;
-        brightest = std::max(brightest, static_cast<int>(pixel[3]));
-        matches = matches && entries.contains({pixel[0], pixel[1], pixel[2], pixel[3]});
+        for (std::size_t c = 0; c < 3; ++c) {
+            sums.at(c) += frame.rgba[i * 4 + c];
+        }
     }
-    return matches;
+    return sums;
 }
 
-void testAlphaCarriesTheLevel() {
-    geiss::Engine engine(1);
-    engine.resize(32, 24);
-    engine.setEffects({});
-    geiss::PaletteRecipe plain;
-    plain.curves = {2, 2, 2};
-    engine.setPalette(plain);
-    engine.setSlideShiftAllowed(false);
-    const geiss::FrameView frame = engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
-    int brightest = 0;
-    const bool matches = alphaMatchesPalette(engine, frame, brightest);
-    check(brightest == 255, "a full-brightness line carries level 255 in alpha");
-    check(matches, "alpha is the highlight level of the entry each color came from");
-}
+void testWaveFollowsTheSpectrum() {
+    constexpr double rate = 48000.0;
+    auto colored = [&](double hz) {
+        geiss::AudioFrame audio = beatFrame(false, 1.f, 0.f);
+        const auto tone = toneSamples(hz, 0.5f, rate, 256);
+        audio.power = geiss::fourierPower(tone.data(), 256, rate);
+        geiss::Engine engine(1);
+        return channelSums(lineFrame(engine, audio));
+    };
+    const auto bass = colored(40.0);
+    check(bass[0] > bass[1] && bass[0] > bass[2], "a bass-heavy wave draws red");
+    const auto treble = colored(8000.0);
+    check(treble[2] > treble[0] && treble[2] > treble[1], "a treble-heavy wave draws blue");
 
-void testAlphaFollowsTheBlend() {
-    geiss::Engine engine(1);
-    engine.resize(32, 24);
-    geiss::PaletteRecipe plain;
-    plain.curves = {2, 2, 2};
-    engine.setPalette(plain);
-    engine.setSlideShiftAllowed(false);
-    engine.tick(1.0 / 30.0, beatFrame(false, 1.f, 0.f));
-    const geiss::Palette before = engine.paletteColors();
-    engine.nextVisual();
-    // A third of the way into the 0.3 s blend.
-    const geiss::FrameView middle = engine.tick(0.1, beatFrame(false, 1.f, 0.f));
-    const geiss::Palette blended = engine.paletteColors();
-    int brightest = 0;
-    check(blended != before, "the palette is mid-blend");
-    check(alphaMatchesPalette(engine, middle, brightest), "alpha follows the palette while it blends");
-    engine.tick(0.1, beatFrame(false, 1.f, 0.f));
-    const geiss::FrameView done = engine.tick(0.2, beatFrame(false, 1.f, 0.f));
-    check(engine.paletteColors() != blended, "the blend moves on");
-    check(alphaMatchesPalette(engine, done, brightest), "alpha follows the palette once the blend ends");
-}
-
-void testHighlightLevels() {
-    geiss::PaletteRecipe plain;
-    plain.curves = {2, 2, 2};
-    const geiss::HighlightLevels flat = geiss::highlightLevels(geiss::buildPalette(plain, false));
-    bool capped = true;
-    for (std::size_t n = 0; n < flat.size(); ++n) {
-        capped = capped && flat[n] <= n;
+    // Without spectrum power the line takes the drift color, which every channel shares in.
+    geiss::Engine plain(1);
+    const geiss::FrameView frame = lineFrame(plain, beatFrame(false, 1.f, 0.f));
+    const auto drift = channelSums(frame);
+    check(drift[0] > 0 && drift[1] > 0 && drift[2] > 0, "a wave without spectrum power still draws in color");
+    bool alphaMatches = true;
+    unsigned brightest = 0;
+    const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        brightest = std::max<unsigned>(brightest, frame.rgba[i * 4 + 3]);
+        // The shown value doubles the stored one, so a pixel showing 255 is stored at 128 or more.
+        const std::uint8_t top = std::max({frame.rgba[i * 4], frame.rgba[i * 4 + 1], frame.rgba[i * 4 + 2]});
+        alphaMatches = alphaMatches && (frame.rgba[i * 4 + 3] == 0 || top == 255);
     }
-    check(capped, "no level is above its index");
-    check(flat[255] == 255, "the top of a rising palette is a full highlight");
-    check(flat[0] == 0, "index 0 is never a highlight");
-
-    // Curve 6 tops out near 194, while the band doubles 201...249 to a clamped 255.
-    geiss::PaletteRecipe banded;
-    banded.curves = {6, 6, 6};
-    banded.lowBand = 200;
-    banded.highBand = 250;
-    const geiss::HighlightLevels band = geiss::highlightLevels(geiss::buildPalette(banded, false));
-    check(band[249] == 249, "the brightest fresh entries keep their index");
-    check(band[255] < 204, "a top entry dimmer than the palette's brightest does not glow");
-
-    check(geiss::highlightLevels(geiss::Palette{}) == geiss::HighlightLevels{}, "a black palette has no highlights");
+    check(alphaMatches, "only saturated pixels carry a highlight");
+    check(brightest > 0, "a full-brightness line has highlights");
 }
 
 void testBassAverage() {
@@ -1245,19 +1097,14 @@ void testLookPicking() {
 }
 
 // A fresh engine moved to `waveform` by Next, ticked once with a silent-looking flat wave.
-// A plain x * 2 palette, whose index 0 is black, and no slide shift, so a test sees
-// only what it draws.
-void pinLook(geiss::Engine& engine) {
-    geiss::PaletteRecipe plain;
-    plain.curves = {2, 2, 2};
-    engine.setPalette(plain);
-    engine.setSlideShiftAllowed(false);
-}
+// No slide shift, so a test sees only what it draws.
+void pinLook(geiss::Engine& engine) { engine.setSlideShiftAllowed(false); }
 
 geiss::Engine engineDrawing(int waveform, int width, int height) {
     geiss::Engine engine(17);
     engine.resize(width, height);
-    for (int i = 0; i < 500 && engine.waveform() != waveform; ++i) {
+    // Mode 6 draws its edges with sound, so it is skipped to leave only the waveform.
+    for (int i = 0; i < 500 && (engine.waveform() != waveform || geiss::modeHasEdges(engine.mapMode())); ++i) {
         engine.nextVisual();
     }
     check(engine.waveform() == waveform, "Next reaches every waveform");
@@ -1493,7 +1340,7 @@ void testModeEffectsTable() {
               at(one, Effect::Shade) == 550,
           "mode 1 takes the truecolor adjustment of its weights");
     // 170 * 1.3f is a hair under 221 in float, and the original truncated it.
-    check(one.solarMax == 400, "solar strength comes from the 8-bit table");
+    check(one.solarMax == 800, "solar strength comes from the truecolor table");
     check(at(geiss::modeEffects(8), Effect::Shade) == 210, "mode 8 keeps its chained shade weight of 60");
     const geiss::ModeEffects fifteen = geiss::modeEffects(15);
     check(fifteen.minEffects == 0 && fifteen.maxEffects == 1 && at(fifteen, Effect::Chasers) == 0, "mode 15 allows one effect");
@@ -1578,10 +1425,10 @@ void testRandomEffectsRespectLimits() {
     check(soundCount < silentCount, "sound lowers every weight");
 }
 
-using Pixels = std::vector<std::uint8_t>;
 
 int litCount(const Pixels& pixels) {
-    return static_cast<int>(std::count_if(pixels.begin(), pixels.end(), [](std::uint8_t p) { return p > 0; }));
+    const std::vector<std::uint8_t> levels = pixels.levels();
+    return static_cast<int>(std::count_if(levels.begin(), levels.end(), [](std::uint8_t p) { return p > 0; }));
 }
 
 // The farthest lit pixel from (cx, cy).
@@ -1635,7 +1482,7 @@ void testEachEffectDraws() {
 
     const Pixels shade = runEffects(only(Effect::Shade), 25, width, height, 30, 1, sound);
     check(litCount(shade) > 0 && litReach(shade, width, cx, cy) < 9.6f * scale + 30.f, "shade bobs glow near the center");
-    check(*std::max_element(shade.begin(), shade.end()) <= 251, "shade bobs stop adding at 250");
+    check(maxLevel(shade) <= 254, "shade bobs stop adding at 250");
 
     const Pixels chasers = runEffects(only(Effect::Chasers), 25, width, height, 30, 1, sound);
     check(litCount(chasers) > 100, "chasers trace a path");
@@ -1651,15 +1498,15 @@ void testEachEffectDraws() {
 
     const Pixels bar = runEffects(only(Effect::Bar), 25, width, height, 1, 1, sound);
     bool sixteens = litCount(bar) > 0;
-    for (const std::uint8_t p : bar) {
+    for (const std::uint8_t p : bar.levels()) {
         sixteens = sixteens && p % 16 == 0;
     }
     check(sixteens, "one frame of the bar adds 16 per point");
     check(litReach(bar, width, cx, cy) <= 31.f * scale * 1.5f + 2.f, "the bar stays near the center");
     const Pixels slowBar = runEffects(only(Effect::Bar), 25, width, height, 60, 1, sound);
-    check(*std::max_element(slowBar.begin(), slowBar.end()) <= 238, "the bar stops adding at 223");
+    check(maxLevel(slowBar) <= 238, "the bar stops adding at 223");
     const Pixels fastBar = runEffects(only(Effect::Bar), 25, width, height, 1, 4, sound);
-    check(*std::max_element(fastBar.begin(), fastBar.end()) >= 12, "at 120 fps the bar adds its share each tick");
+    check(maxLevel(fastBar) >= 12, "at 120 fps the bar adds its share each tick");
 
     const Pixels dots = runEffects(only(Effect::Dots), 25, width, height, 1, 1, sound);
     check(litCount(dots) == 1, "the first frame of dots draws one dot");
@@ -1701,6 +1548,77 @@ void testEachEffectDraws() {
     check(litCount(small) == 1, "a cleared trail draws no dots from the old size");
 }
 
+geiss::AudioFrame spectrumFrame(float bass, float middle, float treble) {
+    geiss::AudioFrame audio = beatFrame(false, 1.f, 0.f);
+    audio.spectrum = {bass, middle, treble};
+    return audio;
+}
+
+// Whether some lit pixel has channels that differ by more than `spread`.
+bool hasColor(const Pixels& pixels, int spread) {
+    for (std::size_t i = 0; i < pixels.size(); ++i) {
+        const geiss::Rgb c = pixels.rgb(i);
+        if (std::max({c.r, c.g, c.b}) - std::min({c.r, c.g, c.b}) > spread) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void testTruecolorEffects() {
+    using geiss::Effect;
+    constexpr int width = 320;
+    constexpr int height = 240;
+    const geiss::AudioFrame sound = beatFrame(false, 1.f, 0.f);
+
+    // The bar's channels are drawn apart in time, so over a run of frames its trail fringes.
+    const Pixels bar = runEffects(only(Effect::Bar), 25, width, height, 40, 1, sound);
+    check(hasColor(bar, 15), "the bar's channels land apart, fringing it in color");
+
+    // Each dot is one color whose channels cycle at their own rates.
+    const Pixels dot = runEffects(only(Effect::Dots), 25, width, height, 1, 1, sound);
+    check(hasColor(dot, 10), "a dot is colored, not grey");
+    const Pixels later = runEffects(only(Effect::Dots), 25, width, height, 40, 1, sound);
+    std::set<std::array<int, 3>> colors;
+    for (std::size_t i = 0; i < later.size(); ++i) {
+        const geiss::Rgb c = later.rgb(i);
+        if (later[i] > 0) {
+            colors.insert({c.r, c.g, c.b});
+        }
+    }
+    check(colors.size() > 1, "the dots' color changes over time");
+    check(litCount(runEffects(only(Effect::Dots), 25, 880, 495, 1, 1, sound)) == 4, "from 880 wide a dot is 2x2");
+
+    // Shade bobs switch each channel on and off, so their glow takes on color.
+    const Pixels shade = runEffects(only(Effect::Shade), 25, width, height, 200, 1, sound);
+    check(hasColor(shade, 5), "shade bobs glow in drifting colors");
+    check(maxLevel(shade) <= 254, "shade bobs stop adding at 250");
+
+    // Each solar particle gives every channel its own strength.
+    const Pixels solar = runEffects(only(Effect::Solar), 1, width, height, 10, 1, sound);
+    check(hasColor(solar, 5), "solar particles sparkle in color");
+
+    // The nuclide's rings take the drift's tint.
+    Pixels rings(static_cast<std::size_t>(width) * height, 0);
+    geiss::EffectLayer layer(5);
+    geiss::ColorDrift drift;
+    drift.offset = 1234;
+    layer.setColorDrift(drift);
+    geiss::AudioFrame jump = sound;
+    jump.volume = 150.f;
+    layer.draw(rings.data(), width, height, only(Effect::Nuclide), 25, width / 2.f, height / 2.f, 1.0, jump);
+    check(litCount(rings) > 20 && hasColor(rings, 10), "nuclide rings are tinted");
+
+    // Each spectral dot has a color whose channels add up to at least 1.2.
+    const Pixels spectral = runEffects(only(Effect::Spectral), 25, 640, 360, 1, 1, spectrumFrame(255.f, 255.f, 255.f));
+    check(hasColor(spectral, 10), "spectral dots are colored");
+
+    // The grid and crystals raise every channel alike over black.
+    const Pixels grid = runEffects(only(Effect::Grid), 25, width, height, 1, 1, sound);
+    const Pixels crystal = runEffects(only(Effect::Crystals), 25, width, height, 1, 1, sound);
+    check(!hasColor(grid, 0) && !hasColor(crystal, 0), "the grid and crystals draw grey");
+}
+
 void testNuclide() {
     using geiss::Effect;
     constexpr int width = 320;
@@ -1714,7 +1632,7 @@ void testNuclide() {
     for (int i = 0; i < 30; ++i) {
         layer.draw(pixels.data(), width, height, effects, 25, width / 2.f, height / 2.f, 1.0, steady);
     }
-    std::fill(pixels.begin(), pixels.end(), 0);
+    pixels.clear();
     for (int i = 0; i < 30; ++i) {
         layer.draw(pixels.data(), width, height, effects, 25, width / 2.f, height / 2.f, 1.0, steady);
     }
@@ -1740,7 +1658,7 @@ void testNuclide() {
     int silentRings = 0;
     geiss::EffectLayer resting(9);
     for (int i = 0; i < 1200; ++i) {
-        std::fill(pixels.begin(), pixels.end(), 0);
+        pixels.clear();
         resting.draw(pixels.data(), width, height, effects, 25, width / 2.f, height / 2.f, 1.0, quietFrame());
         if (litCount(pixels) > 0) {
             ++silentRings;
@@ -1752,7 +1670,7 @@ void testNuclide() {
     int fastRings = 0;
     geiss::EffectLayer fastResting(9);
     for (int i = 0; i < 4800; ++i) {
-        std::fill(pixels.begin(), pixels.end(), 0);
+        pixels.clear();
         fastResting.draw(pixels.data(), width, height, effects, 25, width / 2.f, height / 2.f, 0.25, quietFrame());
         fastRings += litCount(pixels) > 0 ? 1 : 0;
     }
@@ -1762,16 +1680,10 @@ void testNuclide() {
     geiss::EffectSet burstOnly;
     burstOnly.solarBurst = true;
     late.startLook(burstOnly);
-    std::fill(pixels.begin(), pixels.end(), 0);
+    pixels.clear();
     late.draw(pixels.data(), width, height, burstOnly, 1, width / 2.f, height / 2.f, 1.0, quietFrame());
     late.draw(pixels.data(), width, height, burstOnly, 1, width / 2.f, height / 2.f, 1.0, steady);
     check(litCount(pixels) == 0, "a look that opens in silence loses its solar burst");
-}
-
-geiss::AudioFrame spectrumFrame(float bass, float middle, float treble) {
-    geiss::AudioFrame audio = beatFrame(false, 1.f, 0.f);
-    audio.spectrum = {bass, middle, treble};
-    return audio;
 }
 
 void testSpectralDots() {
@@ -1799,14 +1711,14 @@ void testSpectralDots() {
         for (int i = 0; i < ticks; ++i) {
             layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0 / ticks, spectrumFrame(200.f, 0.f, 0.f));
         }
-        std::fill(pixels.begin(), pixels.end(), 0);
+        pixels.clear();
         layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(200.f, 0.f, 0.f));
         return pixels;
     };
     check(nextFrame(4) == nextFrame(1), "spectral dots update once per reference frame at 120 fps");
     auto sum = [](const Pixels& pixels) {
         long total = 0;
-        for (const std::uint8_t p : pixels) {
+        for (const std::uint8_t p : pixels.levels()) {
             total += p;
         }
         return total;
@@ -1819,7 +1731,7 @@ void testSpectralDots() {
         for (int i = 0; i < 30; ++i) {
             layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(200.f, 0.f, 0.f));
         }
-        std::fill(pixels.begin(), pixels.end(), 0);
+        pixels.clear();
         layer.draw(pixels.data(), width, height, effects, 25, cx, cy, frames, spectrumFrame(200.f, 0.f, 0.f));
         return sum(pixels);
     };
@@ -1835,7 +1747,7 @@ void testSpectralDots() {
         Pixels pixels(static_cast<std::size_t>(width) * height, 0);
         bool everyFrame = true;
         for (int i = 0; i < 16; ++i) {
-            std::fill(pixels.begin(), pixels.end(), 0);
+            pixels.clear();
             layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 0.25, spectrumFrame(200.f, 200.f, 200.f));
             if (i >= 3) {
                 everyFrame = everyFrame && litCount(pixels) > 0;
@@ -1865,10 +1777,10 @@ void testSpectralDots() {
         for (int i = 0; i < 30; ++i) {
             layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(200.f, 0.f, 0.f));
         }
-        std::fill(pixels.begin(), pixels.end(), 0);
+        pixels.clear();
         layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(200.f, 0.f, 0.f));
         const auto before = discCenter(pixels);
-        std::fill(pixels.begin(), pixels.end(), 0);
+        pixels.clear();
         layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(second, 0.f, 0.f));
         const auto after = discCenter(pixels);
         return std::hypot(after.first - before.first, after.second - before.second);
@@ -1887,7 +1799,7 @@ void testSpectralDots() {
         }
         layer.startLook(only(Effect::Chasers));
         layer.startLook(effects);
-        std::fill(pixels.begin(), pixels.end(), 0);
+        pixels.clear();
         layer.draw(pixels.data(), width, height, effects, 25, cx, cy, 1.0, spectrumFrame(0.f, 0.f, 0.f));
         check(litCount(pixels) == 0, "a new look's spectral dots forget the last look's levels");
     }
@@ -1902,7 +1814,7 @@ void testCrystalsAndEdges() {
 
     const Pixels crystal = runEffects(only(Effect::Crystals), 25, width, height, 1, 1, sound);
     bool floor150 = litCount(crystal) > 0;
-    for (const std::uint8_t p : crystal) {
+    for (const std::uint8_t p : crystal.levels()) {
         floor150 = floor150 && (p == 0 || p == 150);
     }
     check(floor150, "crystal spokes raise their pixels to 150");
@@ -1911,7 +1823,7 @@ void testCrystalsAndEdges() {
     Pixels bright(static_cast<std::size_t>(width) * height, 200);
     geiss::EffectLayer crystalLayer(4);
     crystalLayer.draw(bright.data(), width, height, only(Effect::Crystals), 25, width / 2.f, height / 2.f, 1.0, sound);
-    check(std::all_of(bright.begin(), bright.end(), [](std::uint8_t p) { return p == 200; }),
+    check(allLevels(bright, [](std::uint8_t p) { return p == 200; }),
           "crystals never darken a pixel");
 
     const Pixels edges = runEffects({}, 6, width, height, 1, 1, sound);
@@ -1920,10 +1832,18 @@ void testCrystalsAndEdges() {
     for (std::size_t i = 0; i < edges.size(); ++i) {
         const int y = static_cast<int>(i) / width;
         const bool edgeRow = y < 3 || y >= height - 3;
-        onEdges = onEdges && (edgeRow ? edges[i] < 120 : edges[i] == 0);
+        // Each channel's wave reaches 198, plus noise of up to 39.
+        onEdges = onEdges && (edgeRow ? edges[i] < 238 : edges[i] == 0);
         lit += edgeRow && edges[i] > 0 ? 1 : 0;
     }
-    check(onEdges, "mode 6 draws faint noise on three rows at the top and bottom");
+    check(onEdges, "mode 6 draws noise on three rows at the top and bottom");
+    // The channels follow their own waves, so along a row the color changes.
+    bool tinted = false;
+    for (int x = 0; x < width && !tinted; ++x) {
+        const geiss::Rgb c = edges.rgb(static_cast<std::size_t>(x));
+        tinted = std::abs(c.r - c.g) > 60 || std::abs(c.g - c.b) > 60 || std::abs(c.r - c.b) > 60;
+    }
+    check(tinted, "mode 6's edges are colored per channel");
     check(lit > width * 3, "mode 6's edges cover the rows");
     check(litCount(runEffects({}, 25, width, height, 1, 1, sound)) == 0, "other maps draw no edges");
     // The edges are rewritten once per reference frame, so 120 fps uses the same noise as 30 fps.
@@ -1932,7 +1852,7 @@ void testCrystalsAndEdges() {
         Pixels pixels(static_cast<std::size_t>(width) * height, 0);
         int stamps = 0;
         for (int i = 0; i < 8; ++i) {
-            std::fill(pixels.begin(), pixels.end(), 0);
+            pixels.clear();
             layer.draw(pixels.data(), width, height, {}, 6, width / 2.f, height / 2.f, 0.25, sound);
             stamps += litCount(pixels) > 0 ? 1 : 0;
         }
@@ -1967,18 +1887,6 @@ void testSpectrumBands() {
     check(quiet[0] == 0.f && quiet[1] == 0.f && quiet[2] == 0.f, "silence has no band levels");
     const auto loud = bandsOf(60.0, 1.f);
     check(loud[0] == 255.f, "band levels stop at 255");
-}
-
-std::vector<float> toneSamples(double hz, float amplitude, double rate, int frames) {
-    std::vector<float> tone(static_cast<std::size_t>(frames));
-    for (int i = 0; i < frames; ++i) {
-        tone[static_cast<std::size_t>(i)] = amplitude * static_cast<float>(std::sin(2.0 * std::numbers::pi * hz * i / rate));
-    }
-    return tone;
-}
-
-std::size_t strongestBand(const std::array<float, geiss::kFourierDetail>& power) {
-    return static_cast<std::size_t>(std::max_element(power.begin(), power.end()) - power.begin());
 }
 
 void testFourierPower() {
@@ -2123,7 +2031,7 @@ void testCenterDwindle() {
     check(twelve[0 * width + 31] == 183 && twelve[47 * width + 33] == 183 && twelve[0 * width + 34] == 200,
           "mode 12 darkens a three-pixel column");
     const Pixels zoom = filled(25);
-    check(std::all_of(zoom.begin(), zoom.end(), [](std::uint8_t p) { return p == 200; }), "mode 25 leaves the center alone");
+    check(allLevels(zoom, [](std::uint8_t p) { return p == 200; }), "mode 25 leaves the center alone");
 }
 
 void testMode5FollowsNuclide() {
@@ -2299,15 +2207,15 @@ void testSoftSpot() {
     constexpr auto side = static_cast<std::size_t>(size);
     Pixels pixels(side * side, 0);
     auto at = [&](int x, int y) { return pixels[(static_cast<std::size_t>(y) * side) + static_cast<std::size_t>(x)]; };
-    geiss::plotSoftSpot(pixels.data(), size, size, 4, 4, 200);
-    check(at(4, 4) == 200, "a soft spot's center is the full index");
+    geiss::plotSoftSpot(pixels.data(), size, size, 4, 4, {200, 200, 200});
+    check(at(4, 4) == 200, "a soft spot's center is the full color");
     check(at(3, 4) == at(5, 4) && at(4, 3) == at(4, 5), "a soft spot is symmetric");
     check(at(5, 4) > 100 && at(5, 4) < 200, "a soft spot's neighbors are dimmer");
     check(at(6, 6) > 0 && at(6, 6) < at(5, 5), "a soft spot fades toward its corners");
     check(at(7, 4) == 0 && at(4, 1) == 0, "a soft spot spans 5x5");
-    geiss::plotSoftSpot(pixels.data(), size, size, 4, 4, 50);
+    geiss::plotSoftSpot(pixels.data(), size, size, 4, 4, {50, 50, 50});
     check(at(4, 4) == 200, "a soft spot keeps a brighter pixel");
-    geiss::plotSoftSpot(pixels.data(), size, size, 0, 0, 200);
+    geiss::plotSoftSpot(pixels.data(), size, size, 0, 0, {200, 200, 200});
     check(at(0, 0) == 200 && at(1, 0) > 100, "a soft spot clips at the edges");
 }
 
@@ -2321,8 +2229,9 @@ void testIdleWave() {
     const geiss::FrameView settled = tickSilence(engine, 8.0, 30);
     check(engine.idleLevel() == 1.f, "the idle wave has risen after about six seconds of silence");
     check(litPixels(settled).size() > 160, "silence keeps a moving picture");
-    // A plain palette's highlight level is about its index, so this bounds the drawn index.
-    check(maxAlpha(settled) <= 140, "the idle wave stays in the palette's lower half");
+    // The drift swings each channel up to 2.5 times the idle brightness; even that stays below
+    // the highlight start.
+    check(maxAlpha(settled) == 0, "the idle wave never glows");
 
     const std::size_t bytes = static_cast<std::size_t>(settled.width) * static_cast<std::size_t>(settled.height) * 4;
     const std::vector<std::uint8_t> before(settled.rgba, settled.rgba + bytes);
@@ -2445,19 +2354,11 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testPeakRelaxes();
     testWarpShift();
     testBassAverage();
-    testAlphaCarriesTheLevel();
-    testAlphaFollowsTheBlend();
-    testHighlightLevels();
+    testDisplayPixel();
+    testWaveFollowsTheSpectrum();
     testFadeMatchesAtAnyFrameRate();
     testSilenceFadesAtAnyFrameRate();
     testEngineSlideShift();
-    testPaletteCurves();
-    testBuildPalette();
-    testBlendPalettes();
-    testRandomPaletteRecipes();
-    testEnginePalettes();
-    testEnginePaletteBlend();
-    testPaletteSilentGamma();
     testEveryModeBuildsAFiniteMap();
     testModeDampingAndDecay();
     testNewModeShapes();
@@ -2472,6 +2373,7 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testRandomEffectsRespectLimits();
     testEachEffectDraws();
     testNuclide();
+    testTruecolorEffects();
     testSpectralDots();
     testCrystalsAndEdges();
     testSpectrumBands();

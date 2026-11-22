@@ -517,20 +517,27 @@ void warpBand(void* context, int index) {
             const float fx = std::clamp(sx - static_cast<float>(x0), 0.f, 1.f);
             const float fy = std::clamp(sy - static_cast<float>(y0), 0.f, 1.f);
 
-            const std::uint8_t* src = job.src;
-            const float p00 = src[static_cast<std::size_t>(y0) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x0)];
-            const float p10 = src[static_cast<std::size_t>(y0) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x1)];
-            const float p01 = src[static_cast<std::size_t>(y1) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x0)];
-            const float p11 = src[static_cast<std::size_t>(y1) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x1)];
-            const float top = p00 * (1.f - fx) + p10 * fx;
-            const float bottom = p01 * (1.f - fx) + p11 * fx;
-            float value = (top * (1.f - fy) + bottom * fy) * job.decay;
-            value = std::clamp(value, 0.f, 255.f);
+            const auto stride = static_cast<std::size_t>(width) * kPixelBytes;
+            const std::uint8_t* p00 = job.src + static_cast<std::size_t>(y0) * stride + static_cast<std::size_t>(x0) * kPixelBytes;
+            const std::uint8_t* p10 = job.src + static_cast<std::size_t>(y0) * stride + static_cast<std::size_t>(x1) * kPixelBytes;
+            const std::uint8_t* p01 = job.src + static_cast<std::size_t>(y1) * stride + static_cast<std::size_t>(x0) * kPixelBytes;
+            const std::uint8_t* p11 = job.src + static_cast<std::size_t>(y1) * stride + static_cast<std::size_t>(x1) * kPixelBytes;
+            const float w00 = (1.f - fx) * (1.f - fy) * job.decay;
+            const float w10 = fx * (1.f - fy) * job.decay;
+            const float w01 = (1.f - fx) * fy * job.decay;
+            const float w11 = fx * fy * job.decay;
             // Intentional difference: the original truncated its weighted sum, which at 30 fps
             // took about one level off every frame. Plain rounding would keep a small
             // per-frame darkening from ever landing at high frame rates, so trails would stop
             // fading. Random rounding keeps the expected value at any frame rate.
-            job.dst[pixel] = static_cast<std::uint8_t>(std::min(value + ditherThreshold(x, y, job.ditherSeed), 255.f));
+            const float threshold = ditherThreshold(x, y, job.ditherSeed);
+            std::uint8_t* out = job.dst + pixel * kPixelBytes;
+            for (int c = 0; c < 3; ++c) {
+                const float value = static_cast<float>(p00[c]) * w00 + static_cast<float>(p10[c]) * w10 +
+                                    static_cast<float>(p01[c]) * w01 + static_cast<float>(p11[c]) * w11;
+                out[c] = static_cast<std::uint8_t>(std::min(value + threshold, 255.f));
+            }
+            out[3] = 0;
         }
     }
 }
@@ -548,9 +555,9 @@ void buildMap(std::vector<SourcePoint>& out, int width, int height, const MapPar
     bands(job.count, &job, buildBand);
 }
 
-void warpIndices(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
-                 const SourcePoint* map, float step, float decay, float shiftX, float shiftY,
-                 std::uint32_t ditherSeed, const BandRunner& bands) {
+void warpPixels(const std::uint8_t* src, std::uint8_t* dst, int width, int height,
+                const SourcePoint* map, float step, float decay, float shiftX, float shiftY,
+                std::uint32_t ditherSeed, const BandRunner& bands) {
     if (width < 2 || height < 2 || src == nullptr || dst == nullptr || map == nullptr) {
         return;
     }
