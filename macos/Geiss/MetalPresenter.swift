@@ -45,11 +45,9 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     private let pipeline: MTLRenderPipelineState
     /// Uploads rotate through these so the CPU never writes a texture the GPU is still reading.
     private static let textureCount = 3
-    /// Written by an upload or by the GPU expansion, as plain 8-bit values.
+    /// Written by an upload or by the GPU expansion, as plain 8-bit values: the stored channels,
+    /// which pick palette colors, and the held share in alpha.
     private var textures: [MTLTexture] = []
-    /// The same textures seen as sRGB, so the texture unit decodes the colors before it filters
-    /// them and the shader does not. Alpha, the highlight level, stays linear.
-    private var views: [MTLTexture] = []
     private var textureIndex = 0
     private var texture: MTLTexture?
     /// True when the last changed frame never reached a texture, so an unchanged frame after it
@@ -59,11 +57,16 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     /// True between an upload's wait and the draw that releases that slot.
     private var slotHeld = false
     private weak var view: MTKView?
-    /// HDR highlights: the hottest pixels rise above SDR white, up to this many
+    /// HDR highlights: the top of the palette rises above SDR white, up to this many
     /// times white or the screen's current headroom, whichever is lower.
     static let highlightCap: Float = 2.5
     /// Whether the screen's view is drawn with highlights. True only on an HDR screen.
     private(set) var highlightsOn = false
+    /// The palette table the fragment shader maps brightness through: linear RGBA floats, from
+    /// the engine, already adapted to `highlightGain`. Starts black.
+    var palette = [Float](repeating: 0, count: Int(GeissBridge.paletteEntries) * 4)
+    /// Scales a pixel's brightest channel, over 255, into its place in the palette.
+    var paletteGain: Float = 1
     /// The screen's current extended dynamic range headroom. It can fall to 1 on an HDR
     /// screen, for example at full brightness.
     private(set) var headroom: Float = 1
@@ -71,7 +74,7 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
     private(set) var potentialHeadroom: Float = 1
     /// The screen color space the drawable was last tagged for, once a screen is known.
     private var taggedScreenSpace: CGColorSpace?
-    /// What the brightest level is drawn at, in multiples of SDR white.
+    /// The headroom the palette is remapped into, in multiples of SDR white: 1 on an SDR screen.
     var highlightGain: Float { highlightsOn ? min(Self.highlightCap, max(1, headroom)) : 1 }
 
     /// A screen counts as HDR when it can reach the full highlight gain. Many SDR Mac screens
@@ -188,12 +191,11 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
                 height: height,
                 mipmapped: false
             )
-            descriptor.usage = [.shaderRead, .shaderWrite, .pixelFormatView]
+            descriptor.usage = [.shaderRead, .shaderWrite]
             textures = (0..<Self.textureCount).compactMap { _ in device.makeTexture(descriptor: descriptor) }
-            views = textures.compactMap { $0.makeTextureView(pixelFormat: .rgba8Unorm_srgb) }
             textureIndex = 0
         }
-        guard !textures.isEmpty, views.count == textures.count else {
+        guard textures.count == Self.textureCount else {
             fillPending = true
             releaseSlot()
             return
@@ -206,7 +208,7 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
             return
         }
         fillPending = false
-        texture = views[index]
+        texture = textures[index]
         if let view {
             view.draw()
         }
@@ -233,10 +235,17 @@ final class MetalPresenter: NSObject, MTKViewDelegate {
             return
         }
         matchScreen(view)
-        var gain = highlightGain
         encoder.setRenderPipelineState(pipeline)
         encoder.setFragmentTexture(texture, index: 0)
-        encoder.setFragmentBytes(&gain, length: MemoryLayout<Float>.size, index: 0)
+        // 4 KB, the most setFragmentBytes takes, copied into the command buffer, so the next
+        // frame's table never overwrites one the GPU is still reading.
+        palette.withUnsafeBytes { bytes in
+            if let base = bytes.baseAddress {
+                encoder.setFragmentBytes(base, length: bytes.count, index: 0)
+            }
+        }
+        var gain = paletteGain
+        encoder.setFragmentBytes(&gain, length: MemoryLayout<Float>.size, index: 1)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
         if slotHeld {

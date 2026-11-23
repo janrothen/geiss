@@ -39,6 +39,7 @@
 #include "geiss/color.hpp"
 #include "geiss/effects.hpp"
 #include "geiss/map.hpp"
+#include "geiss/palette.hpp"
 #include "geiss/shift.hpp"
 
 #include <array>
@@ -86,11 +87,9 @@ bool lookAllowed(int mode, int waveform);
 // with 6 less likely, re-rolled until the pair is allowed.
 Look randomLook(Random& random);
 
-// RGB is the simulated color, doubled with saturation as the original's truecolor blit showed
-// it. Alpha carries the pixel's highlight level, rising from 0 to 255 as its brightest stored
-// channel goes from 128 to 208, so a presenter can pick out the hottest cores. It is scaled by
-// the share of that channel not held to SDR (see kHeldByte), so fixed textures never glow.
-// The picture itself is opaque.
+// RGB is the simulated color as stored. A presenter maps the brightest channel, over 255,
+// through the palette (see `Engine::paletteLut`). Alpha carries the share of that channel held
+// to SDR (see kHeldByte), 0 to 255, so fixed textures never glow. The picture itself is opaque.
 struct FrameView {
     // Null when the host expands the pixels itself (see `Engine::setHostExpands`).
     const std::uint8_t* rgba = nullptr;
@@ -122,7 +121,7 @@ struct EngineBuffers {
 };
 
 // Truecolor feedback picture: red, green, and blue per pixel, warped alike, as the original's
-// 32-bit mode. Metal receives only the RGBA view.
+// 32-bit mode. Metal receives only the RGBA view, and shows its brightness through a palette.
 class Engine {
 public:
     explicit Engine(std::uint32_t seed);
@@ -167,6 +166,14 @@ public:
     void setEffects(const EffectSet& effects);
     int height() const { return height_; }
 
+    // The palette each new look fades to, an index into Geiss HDR's saved palettes.
+    int palette() const { return paletteTo_; }
+    // How far the fade from the previous palette has come, 0 to 1.
+    float paletteBlend() const { return static_cast<float>(paletteBlend_); }
+    // The current look-up table for a screen with this much headroom (1 on an SDR screen).
+    // Rebuilt only when the fade or the headroom has moved.
+    const PaletteLut& paletteLut(float headroom);
+
     // The slow color drift of the wave and the nuclide, picked once per engine.
     const ColorDrift& colorDrift() const { return drift_; }
 
@@ -189,6 +196,7 @@ public:
 private:
     void pickLook();
     void pickEffects();
+    void pickPalette();
     void rebuildMap();
     void expandPixels(const std::uint8_t* pixels);
     // Draws the effects into the front frame and starts its warp into the back frame.
@@ -223,6 +231,17 @@ private:
     EffectSet effects_{};
     EffectLayer effectLayer_;
     SlideShift slideShift_;
+    // Each new look fades from the palette on screen to a new one over kPaletteFadeSeconds.
+    // Picked from their own generator, so the looks stay the same.
+    double paletteBlend_ = 1;
+    double lutBlend_ = -1;
+    Random paletteRandom_;
+    int paletteFrom_ = 0;
+    int paletteTo_ = 0;
+    int lutFrom_ = -1;
+    int lutTo_ = -1;
+    float lutHeadroom_ = -1;
+    PaletteLut lut_{};
     // Changes the warp's rounding pattern every tick.
     std::uint32_t ditherSeed_ = 0;
     // Whether the latest audio had sound. Effects for a new look are picked with it.

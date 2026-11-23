@@ -42,6 +42,7 @@ struct InfoSnapshot: Equatable {
     var map: String
     var wave: String
     var effects: String
+    var palette: String
     var hdr: String
     var simulation: String
 }
@@ -107,9 +108,11 @@ final class VisualizerModel: ObservableObject {
     private static let sensitivityKey = "sensitivity"
     /// Debug launch arguments: `-GeissCPUWarp YES` keeps the warp and the expansion on the CPU,
     /// at the CPU path's size cap. `-GeissWarpCheck YES` compares every 120th GPU warp with the
-    /// CPU's and prints the difference.
+    /// CPU's and prints the difference. `-GeissPaletteGain 0.8` scales how far up the palette
+    /// a pixel's brightness reaches, for judging that mapping by eye.
     private static let cpuWarpKey = "GeissCPUWarp"
     private static let warpCheckKey = "GeissWarpCheck"
+    private static let paletteGainKey = "GeissPaletteGain"
     /// The CPU warp and expansion keep 120 Hz up to about this longest side.
     private static let cpuLongestSide: CGFloat = 960
 
@@ -136,6 +139,11 @@ final class VisualizerModel: ObservableObject {
         sensitivity = min(4, max(0.25, stored))
         bridge.setSensitivity(Float(sensitivity))
         let defaults = UserDefaults.standard
+        // Reads a string from the launch arguments as a number too; 0 when it is missing.
+        let paletteGain = defaults.double(forKey: Self.paletteGainKey)
+        if paletteGain > 0 {
+            presenter.paletteGain = Float(paletteGain)
+        }
         if !defaults.bool(forKey: Self.cpuWarpKey) {
             _ = bridge.useGPU(
                 with: presenter.library,
@@ -216,6 +224,13 @@ final class VisualizerModel: ObservableObject {
         var changed: ObjCBool = true
         let pixels = bridge.tick(dt, width: &width, height: &height, changed: &changed)
         let bridge = bridge
+        // The table follows the palette fade and the headroom the last frame was drawn with.
+        let gain = presenter.highlightGain
+        presenter.palette.withUnsafeMutableBufferPointer { table in
+            if let base = table.baseAddress {
+                bridge.copyPalette(forHeadroom: gain, into: base)
+            }
+        }
         presenter.present(
             pixels: pixels,
             width: Int(width),
@@ -297,6 +312,9 @@ final class VisualizerModel: ObservableObject {
             map: "\(look.mapMode) \(look.mapName)",
             wave: wave,
             effects: Self.effectsLine(look),
+            palette: look.paletteBlend < 1
+                ? String(format: "%d (fading in, %.0f%%)", look.palette, look.paletteBlend * 100)
+                : "\(look.palette)",
             hdr: Self.hdrLine(
                 enabled: presenter.highlightsOn,
                 gain: presenter.highlightGain,

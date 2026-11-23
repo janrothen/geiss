@@ -50,33 +50,27 @@ vertex Varying geissVertex(uint id [[vertex_id]]) {
     return out;
 }
 
-// Levels from 80% to the top ease up to `gain` times SDR white.
-float boost(float level, float gain) {
-    return 1.0 + (gain - 1.0) * smoothstep(0.8, 1.0, level);
+// geiss::kPaletteLutSize.
+constant int kPaletteEntries = 256;
+
+// The palette table at t in [0, 1], interpolated between entries, as Geiss HDR read its palette.
+float3 paletteColor(constant float4* lut, float t) {
+    const float x = saturate(t) * float(kPaletteEntries - 1);
+    const int i = min(int(x), kPaletteEntries - 2);
+    return mix(lut[i].rgb, lut[i + 1].rgb, x - float(i));
 }
 
-// RGB is the picture's color, encoded like sRGB and decoded by the texture's sRGB format, so a
-// sample is already linear. Alpha is the highlight level, which rises with the pixel's
-// brightest channel above full SDR brightness. Fresh lines, beat hits, and bright effects
-// glow on an HDR screen while trails keep their SDR brightness.
+// RGB is the simulated color as stored, sampled raw. Its brightest channel, times `gain`, picks a color from
+// the palette table, which the engine has already remapped into the screen's headroom, so the
+// top of the palette glows on an HDR screen. Alpha is the share of that brightness held to SDR:
+// fixed textures (mode 6's edges, the grid, crystals) keep that share at or below SDR white.
 fragment float4 geissFragment(Varying in [[stage_in]], texture2d<float> image [[texture(0)]],
-                              constant float& gain [[buffer(0)]]) {
+                              constant float4* lut [[buffer(0)]], constant float& gain [[buffer(1)]]) {
     constexpr sampler linear(filter::linear, address::clamp_to_edge);
-    const float3 color = image.sample(linear, in.uv).rgb;
-    if (gain <= 1.0) {
-        return float4(color, 1.0);
-    }
-    // Each of the four texels the sampler blended gets its own boost, and the boosts are
-    // blended the same way. Easing a blended level instead would light only the middle of
-    // a magnified line, with a hard edge where the blend crosses 80%.
-    const float2 p = in.uv * float2(image.get_width(), image.get_height()) - 0.5;
-    const float2 f = fract(p);
-    const int2 last = int2(image.get_width(), image.get_height()) - 1;
-    const uint2 a = uint2(clamp(int2(floor(p)), int2(0), last));
-    const uint2 b = uint2(clamp(int2(floor(p)) + 1, int2(0), last));
-    const float top = mix(boost(image.read(a).a, gain), boost(image.read(uint2(b.x, a.y)).a, gain), f.x);
-    const float bottom = mix(boost(image.read(uint2(a.x, b.y)).a, gain), boost(image.read(b).a, gain), f.x);
-    return float4(color * mix(top, bottom, f.y), 1.0);
+    const float4 sampled = image.sample(linear, in.uv);
+    const float t = max(sampled.r, max(sampled.g, sampled.b)) * gain;
+    const float3 color = paletteColor(lut, t);
+    return float4(mix(color, min(color, float3(1.0)), sampled.a), 1.0);
 }
 
 // ---- Simulation ----
@@ -163,10 +157,8 @@ kernel void geissWarp(device const uchar4* src [[buffer(0)]],
     dst[pixel] = uchar4(min(value + threshold, float4(255.0)));
 }
 
-// geiss::displayPixel: each channel doubled with saturation, as the original's truecolor blit
-// showed it, and the highlight level from the brightest channel, 0 at 128 up to 255 at 208,
-// scaled by the share of that channel not held to SDR. Written to the presenter's texture,
-// whose sRGB view the fragment shader samples.
+// geiss::displayPixel: the stored channels, and the share of the brightest one held to SDR.
+// Written to the presenter's texture, which the fragment shader samples.
 kernel void geissExpand(device const uchar4* pixels [[buffer(0)]],
                         constant int2& size [[buffer(1)]],
                         texture2d<float, access::write> out [[texture(0)]],
@@ -176,9 +168,7 @@ kernel void geissExpand(device const uchar4* pixels [[buffer(0)]],
     }
     const int4 p = int4(pixels[gid.y * uint(size.x) + gid.x]);
     const int brightest = max(p.r, max(p.g, p.b));
-    const int level = clamp((brightest - 128) * 255 / (208 - 128), 0, 255);
-    const int unheld = max(brightest - p.a, 0);
-    const int highlight = brightest > 0 ? level * unheld / brightest : 0;
-    const int3 shown = min(p.rgb * 2, int3(255));
-    out.write(float4(float3(shown), float(highlight)) * (1.0 / 255.0), gid);
+    const int held = min(p.a, brightest);
+    const int share = brightest > 0 ? held * 255 / brightest : 0;
+    out.write(float4(float3(p.rgb), float(share)) * (1.0 / 255.0), gid);
 }

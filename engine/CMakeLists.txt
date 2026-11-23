@@ -10,6 +10,7 @@ add_library(geiss_engine STATIC
     src/audio.cpp
     src/beat.cpp
     src/color.cpp
+    src/palette.cpp
     src/effects.cpp
     src/map.cpp
     src/shift.cpp

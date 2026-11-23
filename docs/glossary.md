@@ -62,12 +62,13 @@ Effects draw into the previous frame before the warp, so the map smears them int
 
 - **Look:** a map, a waveform, and that map's effects. Next and the 20-second timer pick a new look. Lock holds the current one.
 - **Slide shift:** about a third of the looks nudge the whole picture a few pixels sideways, and sometimes a row up or down, on loud bass hits in beat mode. Each hit reverses the sideways direction. The picture keeps drifting that way until the next hit. The original called it "shifting".
-- **Truecolor:** the picture keeps red, green, and blue for every pixel, as the original's 32-bit mode did, and warps and fades them alike. The screen shows each value doubled, so a value of 128 is already full brightness. The original's 8-bit palettes are not used.
+- **Truecolor:** the simulation keeps red, green, and blue for every pixel, as the original's 32-bit mode did, and warps and fades them alike. The screen shows only each pixel's brightest channel, through the palette.
+- **Palette:** one of Geiss HDR's 355 hand-tuned color ramps, from black up to a bright top. A pixel's brightness picks its color from it. Each new look fades to another palette over 2 seconds; Lock holds it. The info readout's PAL row shows its number.
 - **Spectrum:** the original's 24 colour bands, from about 27 Hz to 15 kHz, measured over the newest 5 ms of the left channel and smoothed over about half a second.
-- **Wave color:** the waveform's color, from the spectrum: bass draws red, the middle green, and treble blue, scaled to the line's brightness. The original called this "sync color to sound". Here it is always on.
+- **Wave color:** the waveform's simulated color, from the spectrum: bass red, the middle green, and treble blue, scaled to the line's brightness. The original called this "sync color to sound". Here it is always on, but with the palette only its brightness shows.
 - **Color drift:** a slow, endless change of tint, set once per launch. It tints the nuclide's rings, adds a touch to the wave color, and colors the wave on its own in silence and for the idle wave.
 - **Simulation size:** how many pixels the picture is simulated at. With the GPU warp it is one per point of the window, so 2560×1440 fullscreen on a 5K screen; the info readout's SIM row shows it.
-- **Highlight level:** how much a pixel may glow on an HDR screen, 0…255. It rises from 0 to 255 as the pixel's brightest channel goes from 128 to 208, so only the hottest, freshest pixels have high levels. Levels from 80% up glow.
-- **Highlight gain:** how bright the top highlight level is drawn, in multiples of SDR white. It is 2.5 or the screen's current headroom, whichever is lower, and 1 on a screen that is not HDR.
+- **Highlight gain:** the headroom the palette is remapped into, in multiples of SDR white, so the top of the palette glows. It is 2.5 or the screen's current headroom, whichever is lower, and 1 on a screen that is not HDR.
+- **Held share:** how much of a pixel's brightness comes from a fixed texture (mode 6's edges, the grid, crystals). That share of its palette color stays at or below SDR white.
 - **Headroom:** how far above SDR white the screen can draw right now. It follows the brightness setting and can drop to 1 at full brightness. The *potential headroom* is the most the screen can ever offer. A screen counts as HDR when its potential headroom reaches 2.5.
 - **Center darkening:** 13 of the maps darken the pixels at their center every frame, so the zoom does not burn a hot spot there. It belongs to the map, so it continues in silence.
