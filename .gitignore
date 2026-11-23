@@ -4,5 +4,5 @@ DerivedData/
 .claude/settings.local.json
 
 # Local reference copy of Geiss HDR (Apache-2.0, Ryan Geiss); not part of this project
-geiss_hdr/
-geiss_hdr_source.tar
+/geiss_hdr/
+/geiss_hdr_source.tar

@@ -37,6 +37,7 @@
 #include "geiss/color.hpp"
 #include "geiss/engine.hpp"
 #include "geiss/map.hpp"
+#include "geiss/palette.hpp"
 #include "geiss/shift.hpp"
 
 #include <algorithm>
@@ -94,8 +95,8 @@ public:
     // The held level: how much of the brightness is held to SDR.
     std::uint8_t held(std::size_t i) const { return bytes_[i * geiss::kPixelBytes + geiss::kHeldByte]; }
     void setHeld(std::size_t i, std::uint8_t level) { bytes_[i * geiss::kPixelBytes + geiss::kHeldByte] = level; }
-    // The highlight level the presenter gets for pixel `i`.
-    std::uint8_t highlight(std::size_t i) const { return geiss::displayPixel(&bytes_[i * geiss::kPixelBytes])[3]; }
+    // The held share the presenter gets for pixel `i`: 255 when all of its brightness is held.
+    std::uint8_t shownHeld(std::size_t i) const { return geiss::displayPixel(&bytes_[i * geiss::kPixelBytes])[3]; }
     void set(std::size_t i, geiss::Rgb color) {
         std::uint8_t* p = &bytes_[i * geiss::kPixelBytes];
         p[0] = static_cast<std::uint8_t>(color.r);
@@ -1089,26 +1090,20 @@ void testFadeMatchesAtAnyFrameRate() {
 void testDisplayPixel() {
     const std::array<std::uint8_t, 4> dark{0, 0, 0, 0};
     check(geiss::displayPixel(dark.data()) == dark, "black shows black");
-    const std::array<std::uint8_t, 4> dim{10, 64, 100, 0};
+    const std::array<std::uint8_t, 4> dim{10, 64, 250, 0};
     const auto shown = geiss::displayPixel(dim.data());
-    check(shown[0] == 20 && shown[1] == 128 && shown[2] == 200, "the display doubles each channel, as the original's blit did");
-    check(shown[3] == 0, "a pixel below 128 is no highlight");
-    const std::array<std::uint8_t, 4> hot{30, 168, 250, 0};
-    const auto glowing = geiss::displayPixel(hot.data());
-    check(glowing[0] == 60 && glowing[1] == 255 && glowing[2] == 255, "doubling saturates at 255");
-    check(glowing[3] == 255, "a channel at 208 or more is a full highlight");
-    const std::array<std::uint8_t, 4> warm{168, 20, 0, 0};
-    check(geiss::displayPixel(warm.data())[3] == 127, "the highlight rises with the brightest channel from 128 to 208");
+    check(shown[0] == 10 && shown[1] == 64 && shown[2] == 250, "the display passes the stored channels on for the palette");
+    check(shown[3] == 0, "a pixel with nothing held shows no held share");
 
-    // The held level keeps its share of the brightness out of the highlight.
+    // The held share is the held level over the brightest channel.
     const std::array<std::uint8_t, 4> held{30, 168, 250, 250};
     const auto texture = geiss::displayPixel(held.data());
-    check(texture[0] == 60 && texture[1] == 255 && texture[2] == 255, "a held pixel shows the same colors");
-    check(texture[3] == 0, "a pixel held to SDR does not glow");
+    check(texture[0] == 30 && texture[1] == 168 && texture[2] == 250, "a held pixel shows the same channels");
+    check(texture[3] == 255, "a pixel held to SDR is fully held");
     const std::array<std::uint8_t, 4> half{0, 0, 250, 125};
-    check(geiss::displayPixel(half.data())[3] == 127, "a half-held pixel glows half as much");
+    check(geiss::displayPixel(half.data())[3] == 127, "a half-held pixel shows half");
     const std::array<std::uint8_t, 4> over{0, 0, 100, 255};
-    check(geiss::displayPixel(over.data())[3] == 0, "a held level above the brightness is no highlight");
+    check(geiss::displayPixel(over.data())[3] == 255, "a held level above the brightness is fully held");
 
     // A line or soft spot that brightens a held pixel takes it over, so it glows again.
     Pixels spot(25, 150);
@@ -1116,7 +1111,7 @@ void testDisplayPixel() {
         spot.setHeld(i, 150);
     }
     geiss::plotSoftSpot(spot.data(), 5, 5, 2, 2, {250, 250, 250});
-    check(spot.held(12) == 0 && spot.highlight(12) == 255, "a line over a held texture glows");
+    check(spot.held(12) == 0 && spot.shownHeld(12) == 0, "a line over a held texture takes it over");
     check(spot.held(0) == 150, "a spot too faint to brighten a pixel leaves it held");
 
     // A line that only lifts a dimmer channel of a texture leaves it held.
@@ -1124,8 +1119,91 @@ void testDisplayPixel() {
     edge.set(0, {200, 20, 20});
     edge.setHeld(0, 200);
     geiss::plotSoftSpot(edge.data(), 1, 1, 0, 0, {0, 0, 150});
-    check(edge.rgb(0) == geiss::Rgb{200, 20, 150} && edge.held(0) == 200 && edge.highlight(0) == 0,
+    check(edge.rgb(0) == geiss::Rgb{200, 20, 150} && edge.held(0) == 200 && edge.shownHeld(0) == 255,
           "a blue line over a red texture leaves the texture held");
+}
+
+void testPalettes() {
+    check(geiss::paletteCount() == 355, "all of Geiss HDR's saved palettes are ported");
+    bool shaped = true;
+    for (int i = 0; i < geiss::paletteCount(); ++i) {
+        const geiss::Palette& p = geiss::savedPalette(i);
+        shaped = shaped && p.count >= 2 && p.count <= geiss::kMaxPaletteStops;
+        const geiss::LinearRgb black = geiss::samplePalette(p, 0.f);
+        shaped = shaped && black.r == 0.f && black.g == 0.f && black.b == 0.f;
+    }
+    check(shaped, "every palette has 2 to 8 stops and starts at black");
+    const geiss::Palette& first = geiss::savedPalette(0);
+    const geiss::LinearRgb top = geiss::samplePalette(first, 1.f);
+    checkNear(top.r, 2.7884f, 1e-4f, "the ramp ends on its last stop");
+    const geiss::LinearRgb between = geiss::samplePalette(first, 1.5f / 7.f);
+    checkNear(between.g, (0.1137f + 0.3644f) / 2.f, 1e-4f, "the ramp interpolates between stops");
+
+    // Reference values from Geiss HDR's own HdrToSdr and ReduceHdrHeadroom.
+    const geiss::LinearRgb mid = geiss::hdrToSdr(0.5f, {1.4f, 1.2f, 0.2f}, 2.9f);
+    checkNear(mid.r, 0.808190f, 1e-4f, "hdrToSdr matches Geiss HDR in the midtones (red)");
+    checkNear(mid.b, 0.133642f, 1e-4f, "hdrToSdr matches Geiss HDR in the midtones (blue)");
+    const geiss::LinearRgb hot = geiss::hdrToSdr(1.f, {2.9f, 2.5f, 0.4f}, 2.9f);
+    check(hot.r == 1.f && hot.g == 1.f, "hdrToSdr clamps to SDR white");
+    checkNear(hot.b, 0.319543f, 1e-4f, "hdrToSdr fades the top toward white");
+    const geiss::LinearRgb shadow = geiss::hdrToSdr(0.1f, {0.1f, 0.05f, 0.02f}, 2.9f);
+    checkNear(shadow.r, 0.054373f, 1e-4f, "hdrToSdr darkens deep shadows");
+    const geiss::LinearRgb roomy = geiss::reduceHdrHeadroom(2.5f, 1.f, {2.9f, 2.5f, 0.4f}, 2.9f);
+    checkNear(roomy.r, 2.5f, 1e-4f, "reduceHdrHeadroom fills the headroom");
+    checkNear(roomy.g, 2.321126f, 1e-4f, "reduceHdrHeadroom matches Geiss HDR");
+
+    geiss::PaletteLut sdr{};
+    geiss::buildPaletteLut(first, first, 0.f, 1.f, sdr);
+    check(sdr[0][0] == 0.f && sdr[0][1] == 0.f && sdr[0][2] == 0.f && sdr[0][3] == 1.f, "the table starts at black");
+    bool withinSdr = true;
+    for (const auto& entry : sdr) {
+        withinSdr = withinSdr && entry[0] <= 1.f && entry[1] <= 1.f && entry[2] <= 1.f;
+    }
+    check(withinSdr, "an SDR screen's table stays within SDR white");
+    geiss::PaletteLut hdr{};
+    geiss::buildPaletteLut(first, first, 0.f, 2.5f, hdr);
+    check(hdr[255][0] > 1.f && hdr[255][0] <= 2.5f, "an HDR screen's table glows at the top, within the headroom");
+
+    // A blend mixes the two ramps before the remap.
+    const geiss::Palette& second = geiss::savedPalette(1);
+    geiss::PaletteLut a{};
+    geiss::PaletteLut b{};
+    geiss::PaletteLut half{};
+    geiss::buildPaletteLut(first, first, 0.f, 4.f, a);
+    geiss::buildPaletteLut(second, second, 0.f, 4.f, b);
+    geiss::buildPaletteLut(first, second, 0.5f, 4.f, half);
+    check(half[128][1] > std::min(a[128][1], b[128][1]) && half[128][1] < std::max(a[128][1], b[128][1]),
+          "a half blend lies between the two palettes");
+}
+
+void testPaletteChanges() {
+    geiss::Engine engine(3);
+    const geiss::AudioFrame audio = beatFrame(false, 1.f, 0.f);
+    check(engine.palette() == 0 && engine.paletteBlend() == 1.f, "the window opens on the first palette");
+    engine.nextVisual();
+    const int picked = engine.palette();
+    check(picked != 0 && engine.paletteBlend() == 0.f, "Next starts a fade to another palette");
+    engine.tick(1.0 / 30.0, audio);
+    const float early = engine.paletteBlend();
+    check(early > 0.f && early < 0.05f, "the fade moves with time");
+    engine.setPaused(true);
+    engine.tick(1.0, audio);
+    check(engine.paletteBlend() == early, "pause freezes the fade");
+    engine.setPaused(false);
+    engine.setLocked(true);
+    for (int i = 0; i < 30 * 30; ++i) {
+        engine.tick(1.0 / 30.0, audio);
+    }
+    check(engine.palette() == picked && engine.paletteBlend() == 1.f, "lock holds the palette after its fade");
+
+    // The table follows the fade and the headroom, and is reused while neither moves.
+    const geiss::PaletteLut& lut = engine.paletteLut(1.f);
+    geiss::PaletteLut expected{};
+    geiss::buildPaletteLut(geiss::savedPalette(picked), geiss::savedPalette(picked), 0.f, 1.f, expected);
+    check(lut == expected, "a finished fade shows the new palette");
+    const float before = lut[255][0];
+    const float glowing = engine.paletteLut(2.5f)[255][0];
+    check(glowing > before || before == 0.f, "more headroom brightens the top of the table");
 }
 
 // Ticks one frame of a waveform-1 line over a black, effect-free picture.
@@ -1167,17 +1245,12 @@ void testWaveFollowsTheSpectrum() {
     const geiss::FrameView frame = lineFrame(plain, beatFrame(false, 1.f, 0.f));
     const auto drift = channelSums(frame);
     check(drift[0] > 0 && drift[1] > 0 && drift[2] > 0, "a wave without spectrum power still draws in color");
-    bool alphaMatches = true;
-    unsigned brightest = 0;
+    bool unheld = true;
     const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
     for (std::size_t i = 0; i < pixels; ++i) {
-        brightest = std::max<unsigned>(brightest, frame.rgba[i * 4 + 3]);
-        // The shown value doubles the stored one, so a pixel showing 255 is stored at 128 or more.
-        const std::uint8_t top = std::max({frame.rgba[i * 4], frame.rgba[i * 4 + 1], frame.rgba[i * 4 + 2]});
-        alphaMatches = alphaMatches && (frame.rgba[i * 4 + 3] == 0 || top == 255);
+        unheld = unheld && frame.rgba[i * 4 + 3] == 0;
     }
-    check(alphaMatches, "only saturated pixels carry a highlight");
-    check(brightest > 0, "a full-brightness line has highlights");
+    check(unheld, "a line over black is not held to SDR");
 }
 
 void testBassAverage() {
@@ -1887,7 +1960,7 @@ void testTruecolorEffects() {
     const auto neverGlows = [](const Pixels& p) {
         bool calm = true;
         for (std::size_t i = 0; i < p.size(); ++i) {
-            calm = calm && p.highlight(i) == 0 && (p[i] == 0 || p.held(i) == p[i]);
+            calm = calm && (p[i] == 0 || (p.held(i) == p[i] && p.shownHeld(i) == 255));
         }
         return calm;
     };
@@ -1909,7 +1982,7 @@ void testTruecolorEffects() {
     chaserLayer.draw(heldWhite.data(), width, height, only(Effect::Chasers), 25, width / 2.f, height / 2.f, 1.0, sound);
     bool chaserGlows = false;
     for (std::size_t i = 0; i < heldWhite.size(); ++i) {
-        chaserGlows = chaserGlows || (heldWhite.held(i) == 0 && heldWhite.highlight(i) > 0);
+        chaserGlows = chaserGlows || (heldWhite.held(i) == 0 && heldWhite.shownHeld(i) == 0 && heldWhite[i] > 150);
     }
     check(chaserGlows, "a chaser over a held texture takes it over and glows");
 
@@ -2475,11 +2548,12 @@ void testSilenceFadesAtAnyFrameRate() {
     check(silentFade(120) < 1.0, "the picture fades out in silence at 120 fps");
 }
 
-unsigned maxAlpha(const geiss::FrameView& frame) {
+// The brightest channel in the frame, which picks the top palette entry it shows.
+unsigned maxChannel(const geiss::FrameView& frame) {
     unsigned highest = 0;
     const std::size_t pixels = static_cast<std::size_t>(frame.width) * static_cast<std::size_t>(frame.height);
     for (std::size_t i = 0; i < pixels; ++i) {
-        highest = std::max<unsigned>(highest, frame.rgba[i * 4 + 3]);
+        highest = std::max<unsigned>({highest, frame.rgba[i * 4], frame.rgba[i * 4 + 1], frame.rgba[i * 4 + 2]});
     }
     return highest;
 }
@@ -2541,9 +2615,9 @@ void testIdleWave() {
     const geiss::FrameView settled = tickSilence(engine, 8.0, 30);
     check(engine.idleLevel() == 1.f, "the idle wave has risen after about six seconds of silence");
     check(litPixels(settled).size() > 160, "silence keeps a moving picture");
-    // The drift swings each channel up to 2.5 times the idle brightness; even that stays below
-    // the highlight start.
-    check(maxAlpha(settled) == 0, "the idle wave never glows");
+    // The drift swings each channel up to 2.5 times the idle brightness; even that stays in the
+    // dim half of the palette.
+    check(maxChannel(settled) < 128, "the idle wave stays dim");
 
     const std::size_t bytes = static_cast<std::size_t>(settled.width) * static_cast<std::size_t>(settled.height) * 4;
     const std::vector<std::uint8_t> before(settled.rgba, settled.rgba + bytes);
@@ -2696,6 +2770,8 @@ int main() {  // NOLINT(bugprone-exception-escape): a test may abort on a failed
     testWarpShift();
     testBassAverage();
     testDisplayPixel();
+    testPalettes();
+    testPaletteChanges();
     testWaveFollowsTheSpectrum();
     testFadeMatchesAtAnyFrameRate();
     testSilenceFadesAtAnyFrameRate();

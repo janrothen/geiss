@@ -47,11 +47,10 @@ namespace {
 constexpr double kReferenceFps = 30.0;
 constexpr double kMaxDt = 0.1;
 constexpr double kMapInterval = 20.0;
-// The presenter's highlight level rises from 0 at this stored channel value to 255 at
-// kHighlightFull. The display doubles each channel, so 128 is already full SDR brightness;
-// only the hottest cores above it glow on an HDR screen.
-constexpr int kHighlightStart = 128;
-constexpr int kHighlightFull = 208;
+// A new look's palette fades in over this many seconds of motion. The window opens on
+// kFirstPalette, as it opens on mode 25 and waveform 1.
+constexpr double kPaletteFadeSeconds = 2.0;
+constexpr int kFirstPalette = 0;
 // When a look is due during beat mode, it waits for a big beat, as the finished map did in
 // the original. The threshold starts at 1.10 and relaxes by 0.2.
 // Intentional difference: the original relaxed over its 550-frame (about 18 s) switch
@@ -73,7 +72,7 @@ constexpr double kIdleWaitSeconds = 1.5;
 constexpr double kIdleRiseSeconds = 4.0;
 // On RenderWave's 0...155 brightness scale: the wave breathes between about 26 and 46 over
 // kIdleBreathSeconds. The drift's brightest channel peaks near 2.5 times that, about 114,
-// which shows below full brightness and never reaches the highlight start.
+// a dim part of the palette, so it never glows.
 constexpr float kIdleBright = 36.f;
 constexpr float kIdleBreath = 10.f;
 // The hand-off. Sound whose line would draw dimmer than the idle wave's darkest keeps the
@@ -465,6 +464,9 @@ Engine::Engine(std::uint32_t seed) : effectLayer_(seed ^ 0x5BD1E995u), slideShif
     driftRandom.state = (seed ^ 0x68E31DA4u) == 0 ? 1u : seed ^ 0x68E31DA4u;
     drift_ = randomColorDrift(driftRandom);
     effectLayer_.setColorDrift(drift_);
+    paletteRandom_.state = (seed ^ 0x165667B1u) == 0 ? 1u : seed ^ 0x165667B1u;
+    paletteFrom_ = kFirstPalette;
+    paletteTo_ = kFirstPalette;
     pickEffects();
     slideShift_.startLook(SlideShift::rollAllowed(random_));
     resize(960, 540);
@@ -526,6 +528,32 @@ void Engine::pickLook() {
     waveform_ = picked.waveform;
     pickEffects();
     slideShift_.startLook(SlideShift::rollAllowed(random_));
+    pickPalette();
+}
+
+void Engine::pickPalette() {
+    // A look that comes during a fade starts from whichever palette is nearer on screen.
+    paletteFrom_ = paletteBlend_ < 0.5 ? paletteFrom_ : paletteTo_;
+    int picked = paletteRandom_.below(paletteCount() - 1);
+    if (picked >= paletteFrom_) {
+        ++picked;
+    }
+    paletteTo_ = picked;
+    paletteBlend_ = 0;
+}
+
+const PaletteLut& Engine::paletteLut(float headroom) {
+    if (paletteFrom_ != lutFrom_ || paletteTo_ != lutTo_ || paletteBlend_ != lutBlend_ || headroom != lutHeadroom_) {
+        // Ease the fade in and out.
+        const double t = paletteBlend_;
+        const auto eased = static_cast<float>(t * t * (3 - 2 * t));
+        buildPaletteLut(savedPalette(paletteFrom_), savedPalette(paletteTo_), eased, headroom, lut_);
+        lutFrom_ = paletteFrom_;
+        lutTo_ = paletteTo_;
+        lutBlend_ = paletteBlend_;
+        lutHeadroom_ = headroom;
+    }
+    return lut_;
 }
 
 void Engine::pickEffects() {
@@ -560,34 +588,11 @@ void Engine::rebuildMap() {
     }
 }
 
-namespace {
-
-// The original's truecolor blit doubled each channel with saturation (REMAP, PADDUSB).
-constexpr std::array<std::uint8_t, 256> kDisplayLevels = [] {
-    std::array<std::uint8_t, 256> levels{};
-    for (std::size_t c = 0; c < levels.size(); ++c) {
-        levels[c] = static_cast<std::uint8_t>(std::min<std::size_t>(c * 2, 255));
-    }
-    return levels;
-}();
-
-constexpr std::array<std::uint8_t, 256> kHighlightLevels = [] {
-    std::array<std::uint8_t, 256> levels{};
-    for (int c = 0; c < 256; ++c) {
-        const int level = (c - kHighlightStart) * 255 / (kHighlightFull - kHighlightStart);
-        levels[static_cast<std::size_t>(c)] = static_cast<std::uint8_t>(std::clamp(level, 0, 255));
-    }
-    return levels;
-}();
-
-}  // namespace
-
 std::array<std::uint8_t, 4> displayPixel(const std::uint8_t* pixel) {
     const int brightest = std::max({pixel[0], pixel[1], pixel[2]});
-    // Only the share of the brightness that is not held to SDR glows.
-    const int free = std::max(brightest - static_cast<int>(pixel[kHeldByte]), 0);
-    const int level = brightest > 0 ? kHighlightLevels[static_cast<std::size_t>(brightest)] * free / brightest : 0;
-    return {kDisplayLevels[pixel[0]], kDisplayLevels[pixel[1]], kDisplayLevels[pixel[2]], static_cast<std::uint8_t>(level)};
+    const int held = std::min(static_cast<int>(pixel[kHeldByte]), brightest);
+    const int share = brightest > 0 ? held * 255 / brightest : 0;
+    return {pixel[0], pixel[1], pixel[2], static_cast<std::uint8_t>(share)};
 }
 
 void Engine::setHostExpands(bool hostExpands) {
@@ -661,6 +666,7 @@ FrameView Engine::tick(double dt, const AudioFrame& audio) {
     }
 
     motionTime_ += dt;
+    paletteBlend_ = std::min(1.0, paletteBlend_ + dt / kPaletteFadeSeconds);
     // The shift keeps following peaks while locked, like the rest of the audio motion.
     slideShift_.update(dt, audio, width_);
     if (!warpReady_) {

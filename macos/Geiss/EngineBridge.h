@@ -55,6 +55,9 @@ NS_ASSUME_NONNULL_BEGIN
 // True while the engine last ticked in silence, so the effects rest, apart from the
 // nuclide's random rings.
 @property (nonatomic, readonly) BOOL resting;
+// The Geiss HDR palette the look fades to, and how far that fade has come, 0 to 1.
+@property (nonatomic, readonly) int palette;
+@property (nonatomic, readonly) float paletteBlend;
 
 @end
 
@@ -92,6 +95,11 @@ NS_ASSUME_NONNULL_BEGIN
                 sampleRate:(double)sampleRate
                       time:(double)time;
 - (GeissLookInfo *)lookInfo;
+// Entries in the palette table copyPaletteForHeadroom:into: writes, four floats each.
+@property (class, nonatomic, readonly) int paletteEntries;
+// Writes the current palette table, adapted to `headroom` (1 on an SDR screen), into `lut`:
+// paletteEntries linear RGBA floats. The presenter maps each pixel's brightness through it.
+- (void)copyPaletteForHeadroom:(float)headroom into:(float *)lut;
 - (const uint8_t * _Nullable)tick:(double)dt
                   width:(int *)width
                  height:(int *)height

@@ -123,6 +123,7 @@ struct VisualizerView: View {
             infoRow("MAP", info.map)
             infoRow("WAVE", info.wave)
             infoRow("FX", info.effects)
+            infoRow("PAL", info.palette)
             infoRow("HDR", info.hdr)
             infoRow("SIM", info.simulation)
         }

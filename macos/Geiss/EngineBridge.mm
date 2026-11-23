@@ -38,6 +38,7 @@
 
 #include "geiss/audio.hpp"
 #include "geiss/engine.hpp"
+#include "geiss/palette.hpp"
 
 #include <dispatch/dispatch.h>
 #include <simd/simd.h>
@@ -357,6 +358,8 @@ void finishWarpOnGPU(void* host) {
         }
         _effects = [names copy];
         _resting = !engine.soundActive();
+        _palette = engine.palette();
+        _paletteBlend = engine.paletteBlend();
     }
     return self;
 }
@@ -468,6 +471,15 @@ void finishWarpOnGPU(void* host) {
 
 - (GeissLookInfo *)lookInfo {
     return [[GeissLookInfo alloc] initWithEngine:*engine_];
+}
+
++ (int)paletteEntries {
+    return geiss::kPaletteLutSize;
+}
+
+- (void)copyPaletteForHeadroom:(float)headroom into:(float *)lut {
+    const geiss::PaletteLut &table = engine_->paletteLut(headroom);
+    std::memcpy(lut, table.data(), sizeof(table));
 }
 
 - (const uint8_t *)tick:(double)dt width:(int *)width height:(int *)height changed:(BOOL *)changed {
